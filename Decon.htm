@@ -1,0 +1,165 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+	<head>
+		<title>Deconvolvulator examples</title>
+		<meta http-equiv="Content-Type" content="text/html;charset=iso-8859-1" />
+		<style type="text/css" media="screen"> 
+			
+			#beforeafter .section {
+				margin-top: 2em;
+				position: relative;
+			}
+			
+			#beforeafter .section a.button {
+				position: absolute;
+				right: 0;
+				top: 0.5em;
+			}
+			
+			.beforeafter { position: relative; overflow: hidden; }
+			
+			.before, .after { position: absolute; top: 0; left: 0; }
+			
+			.before { 
+				border-right: 5px solid #000;
+				-moz-box-shadow: 1px 0 20px #222;
+				-webkit-box-shadow: 1px 0 20px #222;
+				box-shadow: 1px 0 20px #222;
+				}
+			
+			.help { 
+				position: absolute;
+				bottom: 20px;
+				right:  70px;
+				font: bold 20px/1em Helvetica, Arial, sans-serif;
+				color: #FFF;
+				opacity: 0.7;
+				}
+			
+		</style> 
+		<script type="text/javascript" charset="utf-8" src="jquery.min.js"></script> 
+		<script type="text/javascript" charset="utf-8"> 
+		
+			$(window).load( function() {
+			
+				// Loop through all the sets of before and after pics
+				$(".beforeafter").each(function(){
+				
+					// Set the container's size to the size of the image
+					$(this).width($(this).find("img[rel=before]").attr("width")).height($(this).find("img[rel=before]").attr("height"));
+				
+					// Convert the images into background images on layered divs
+					$(this).append("<div class='after'></div>").find(".after").css({"background": "url(" + $(this).find("img[rel=after]").attr("src") + ")", "width": $(this).find("img[rel=after]").attr("width") + "px", "height": $(this).find("img[rel=after]").attr("height") + "px"});
+					$(this).append("<div class='before'></div>").find(".before").css({"background": "url(" + $(this).find("img[rel=before]").attr("src") + ")", "width": $(this).find("img[rel=before]").attr("width") - 40 + "px", "height": $(this).find("img[rel=before]").attr("height") + "px"});
+					
+					// Add a helpful message
+					$(this).append("<div class='help'>Hover over the image to toggle before/after</div>");
+					
+					// Remove the original images
+					$(this).find("img").remove();
+					
+					// Event handler for the mouse moving over the image
+					$(this).mousemove(function(event){
+						
+						// Need to know the X position of the parent as people may have their browsers set to any width
+						var offset = $(this).offset().left;
+						
+						// Don't let the reveal go any further than 5 pixels less than the width of the image
+						// or 50 pixels on the left hand side
+						if ((event.clientX - offset) < ($(this).find(".after").width() -5) && (event.clientX - offset) > 5) {
+							// Adjust the width of the top image to match the cursor position
+							$(this).find(".before").width(event.clientX - offset);
+						}
+						
+					});
+					
+					// Fade out the help message after the first hover
+					$(this).hover(function(){
+					
+						$(this).find(".help").animate({"opacity": 0}, 400, function(){ $(this).find(".help").remove(); });
+						
+					});
+					
+				});
+				
+			});
+			
+		</script> 
+	</head>
+	
+	<body>
+		<div class="page_margins">
+			<div class="header" id="subheader"><h1>Deconvolvulator examples</h1></div>
+			<div id="main" class="page"></div>
+		</div>
+    <div id="beforeafter" class="subcolumns">
+    
+<div class="section"><h2><a href='https://www.cloudynights.com/topic/244642-raw-jupiter-data-for-download/'>Jup_CloudyNights_Bird.tif</a></h2>
+<h4>Settings: Wiener NSR_0.00063 Blur_36 Lorentz FWHM_4.00 PSF Reduced at FWHM x_15.0</h4>
+<div class="beforeafter"><img src="Jup_CloudyNights_Bird.jpg" rel="before"/><img src="Jup_CloudyNights_Bird_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='https://www.cloudynights.com/topic/412940-dstation-deconvolution-software/'>jup_PicMidi_2.tif</a></h2>
+<h4>Settings: Wiener NSR_0.00089 Blur_39 Lorentz FWHM_5.00 PSF Reduced at FWHM x_10.0</h4>
+<div class="beforeafter"><img src="jup_PicMidi_2.jpg" rel="before"/><img src="jup_PicMidi_2_repaired.jpg" rel="after"/></div></div>
+ 
+<div class="section"><h2><a href='https://stargazerslounge.com/topic/127437-jupiter-processing-challenge/'>JupiterGRS.tif</a></h2>
+<h4>Settings: Wiener NSR_0.00022 Blur_27 Lorentz FWHM_4.50 PSF Reduced at FWHM x_10.0</h4>
+<div class="beforeafter"><img src="JupiterGRS.jpg" rel="before"/><img src="JupiterGRS_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='https://stargazerslounge.com/topic/353222-kinds-of-noise/?tab=comments#comment-3845301'>Moon_SGL_Craig.tif</a></h2>
+<h4>Settings: Wiener NSR_0.00141 Blur_43 Lorentz FWHM_4.00 PSF Reduced at FWHM x_2.0</h4>
+<div class="beforeafter"><img src="Moon_SGL_Craig.jpg" rel="before"/><img src="Moon_SGL_Craig_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='http://www.skyimaging.com/astronomy-videos.php'>Mars_SkyImaging_g3_ap31.tif (Rolf Arcan)</a></h2>
+<h4>Settings: Wiener NSR_0.00089 Blur_39 Moffat Beta_0.90 FWHM_5.00 PSF Reduced at FWHM x_5.0</h4>
+<div class="beforeafter"><img src="Mars_SkyImaging.jpg" rel="before"/><img src="Mars_SkyImaging_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='https://www.nesdis.noaa.gov'>Earth_Aberrator_0.20Turb_300mm_f20.tif [Resized to 512x512 Blurred by Aberrator - Cor Berrevoets]</a></h2>
+<h4>Settings: Wiener NSR_0.00063 Blur_36 Moffat Beta_0.95 FWHM_1.50 PSF Reduced at FWHM x_10.0</h4>
+<div class="beforeafter"><img src="Earth_Aberrator.jpg" rel="before"/><img src="Earth_Aberrator_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='https://www.nasa.gov/feature/goddard/2019/hubble-new-portrait-of-jupiter'>hst_Jupiter_Aberrator_0.20Turb_300mm_f20.tif [8-bit resized to 512x512 Blurred by Aberrator - Cor Berrevoets]</a></h2>
+<h4>Settings Step 1: Wiener NSR_0.00178 Blur_45 Moffat Beta_0.95 FWHM_1.50 PSF Reduced at FWHM x_20.0<br>
+Settings Step 2: Wiener NSR_0.09987 Blur_80 Gaussian FWHM_1.50</h4>
+<div class="beforeafter"><img src="hst_Jupiter_Aberrator.jpg" rel="before"/><img src="hst_Jupiter_Aberrator_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='https://www.nesdis.noaa.gov'>Earth1_BLURRED Lorentz FWHM_15.00 PSF Reduced at FWHM x_20.0.tif [Blurred by Deconvolvulator - no noise added]</a></h2>
+<h4>Settings: Wiener NSR_0.00000001 Blur_0 Lorentz FWHM_15.00 PSF Reduced at FWHM x_20.0 [Extreme example by typing in NSR value]</h4>
+<div class="beforeafter"><img src="Earth1_BLURRED.jpg" rel="before"/><img src="Earth1_BLURRED_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='https://www.nasa.gov/feature/goddard/2019/hubble-new-portrait-of-jupiter'>hst_Jupiter_Orig_BLURRED Lorentz FWHM_15.00 PSF Reduced at FWHM x_5.0.tif [Blurred by Deconvolvulator - no noise added]</a></h2>
+<h4>Settings: Wiener NSR_0.00000004 Blur_0 Lorentz FWHM_15.00 PSF Reduced at FWHM x_5.0 [Extreme example by typing in NSR value]</h4>
+<div class="beforeafter"><img src="hst_Jupiter_Orig_BLURRED.jpg" rel="before"/><img src="hst_Jupiter_Orig_BLURRED_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='http://82.17.189.31/astro/default.htm'>NGC3372_Keyhole.tif [Stretched image, Author 1.42''/px]</a></h2>
+<h4>Settings: Wiener NSR_0.00316 Blur_50 Moffat Beta_1.50 FWHM_2.00</h4>
+<div class="beforeafter"><img src="NGC3372_Keyhole.jpg" rel="before"/><img src="NGC3372_Keyhole_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='http://82.17.189.31/astro/default.htm'>M42_Core.tif [Stretched image, Author]</a></h2>
+<h4>Settings: Wiener NSR_0.02509 Blur_68 Moffat Beta_1.40 FWHM_2.50</h4>
+<div class="beforeafter"><img src="M42_Core.jpg" rel="before"/><img src="M42_Core_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='http://82.17.189.31/astro/default.htm'>IC434_rotated.tif [Author image, but rotated by software - not realistic noise level]</a></h2>
+<h4>FIELD ROTATION - Repair<br>
+Settings: Motion Deblur->Rotation checked Angle 1.45 Line thickness 1 Centre (-1,-1) Weiner NSR_0.00022<br>
+Settings (Experimental): COSMETIC REPAIRS -> Motion blur deringing 0.06 (Repair more stars) 0.01 (Repair further out from star centres)</h4>
+<div class="beforeafter"><img src="IC434_rotated.jpg" rel="before"/><img src="IC434_rotated_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='http://82.17.189.31/astro/default.htm'>Purga_McNaught_Motion.tif [Author image, untracked stack]</a></h2>
+<h4>MOTION BLUR - Repair<br>
+Settings: Motion Deblur->Length 11.0 Angle 67.0 Rotate img checked Line thickness 1 Anti-aliased checked Weiner NSR_0.00398</h4>
+<div class="beforeafter"><img src="Purga_McNaught_Motion.jpg" rel="before"/><img src="Purga_McNaught_Motion_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='https://www.robots.ox.ac.uk/~az/lectures/ia/lect3.pdf'>motion_blur_Oxon.tif</a></h2>
+<h4>MOTION BLUR - Repair<br>
+Settings: Wiener NSR_0.00141 Blur_43 Motion Length_26.0 Angle_0.0 Fix border artifacts checked</h4>
+<div class="beforeafter"><img src="motion_blur_Oxon.jpg" rel="before"/><img src="motion_blur_Oxon_repaired.jpg" rel="after"/></div></div>
+
+<div class="section"><h2><a href='https://sudonull.com/post/140328-Restore-defocused-and-blurry-images-Practice'>NumberPlate.png</a></h2>
+<h4>MOTION BLUR - Repair<br>
+Settings: Wiener NSR_0.00398 Blur_55 Motion Length_20.0 Angle_45.0 Fix border artifacts checked inc top/bottom</h4>
+<div class="beforeafter"><img src="NumberPlate.jpg" rel="before"/><img src="NumberPlate_repaired.jpg" rel="after"/></div></div>
+
+		</div>
+	 </body>
+</html>
