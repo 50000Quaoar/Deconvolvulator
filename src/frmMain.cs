@@ -34,7 +34,9 @@ namespace Deconvolvulator
         private string msRepairedDesription = "";
         private Mat mREPAIRED = new Mat(); //The currently repaired image
         private Mat mREPAIRED_Unstretched = new Mat(); //The currently repaired image (unstretched version)
-        private Mat mPsfREPAIRED = new Mat(); //PSF used for currently repaired image
+        private Mat mPsfREPAIRED = new Mat(); //PSF specified to deconvolve the current image with
+        private Mat mPsfInvREPAIRED = new Mat(); //PSF of the inverse filter, ie, image could be repaired by convolving with this PSF
+        private Mat mFTDisplayREPAIRED = new Mat(); //FT of current repair filter, displayed in picFilterFT
         private float mFWHMREPAIRED = 0.0f; //FWHM for currently repaired image
         private InterpolationFlags interpolationFlags = 0;
         private int mnMaxImageWidth = 300; //Size of Mat stored internally at any one time
@@ -42,6 +44,7 @@ namespace Deconvolvulator
         private int mnPercentilesStretchMax = 9990;
         private bool mbDeblurDisplayUI = true;
         private Mat imgToDeblur_Input = new Mat(); //For processing of selected rectangle, store the whole input image
+        private bool mbDebug = false; //Output extra debug info into txtDebug
 
         //For iterative deconvolution algorithms
         private bool mbProcessingCancelled = false;
@@ -54,6 +57,8 @@ namespace Deconvolvulator
         //History of previously saved repaired images
         private Mat[] mHistory = new Mat[1000];
         private Mat[] mPSFHistory = new Mat[1000];
+        private Mat[] mPSFInvHistory = new Mat[1000];
+        private Mat[] mFTDisplayHistory = new Mat[1000];
         private float[] mPSFHistoryFWHM = new float[1000];
         private int mHistoryCurrent = 0;
         private bool mbIgnoreCurrentDisplayCboChange = false;
@@ -83,6 +88,7 @@ namespace Deconvolvulator
         private void frmMain_Shown(object sender, EventArgs e)
         {
             mLoadSettings();
+            mSetBackColorsForOptions();
             if (!File.Exists("SExtractor.exe") || !File.Exists("SExtractorWrapper.dll"))
             {
                 //Star finding not available, hence cannot perform deringing near stars
@@ -112,7 +118,9 @@ namespace Deconvolvulator
                 //Initialise for a new image
                 mHistory = new Mat[1000];
                 mPSFHistory = new Mat[1000];
+                mPSFInvHistory = new Mat[1000];
                 mPSFHistoryFWHM = new float[1000];
+                mFTDisplayHistory = new Mat[1000];
                 mHistoryCurrent = 0;
                 cboHistory.Items.Clear();
                 cboCurrent.Items.Clear();
@@ -129,10 +137,10 @@ namespace Deconvolvulator
                 mImageTypeLoaded = imgInput.Type();
 
                 mnImageDepth = 65536;
-                if (mImageTypeLoaded == MatType.CV_8U) //eg jpg, bmp
+                if (mImageTypeLoaded == MatType.CV_8U || mImageTypeLoaded == MatType.CV_8UC3 || mImageTypeLoaded == MatType.CV_8UC4) //eg jpg, bmp
                     mnImageDepth = 256;
-                else if (mImageTypeLoaded == MatType.CV_32F)
-                    mnImageDepth = 1;
+                else if (mImageTypeLoaded == MatType.CV_32F || mImageTypeLoaded == MatType.CV_32FC3 || mImageTypeLoaded == MatType.CV_32FC4 )
+                    mnImageDepth = 65536;
 
                 //Store image as float from 0 to 1
                 mImageTypeInternalChannel = MatType.CV_32F;
@@ -142,8 +150,9 @@ namespace Deconvolvulator
                     mImageTypeInternal = MatType.CV_32FC3;
    
                 imgInput.ConvertTo(imgInput, mImageTypeInternal);
-                //Divide by mnImageDepth
-                imgInput = imgInput / mnImageDepth;
+                //Divide by mnImageDepth, unless CV_32F
+                if (!(mImageTypeLoaded == MatType.CV_32F || mImageTypeLoaded == MatType.CV_32FC3 || mImageTypeLoaded == MatType.CV_32FC4))
+                    imgInput = imgInput / mnImageDepth;
 
                 //Crop image to even width and height
                 //If odd, round down to even number below
@@ -373,13 +382,14 @@ namespace Deconvolvulator
                     bCropPSF, dCropPSF, dBrightness, dFeather, bSymetrical, nTiles, fFieldRotationAngle, ref psfRotation,
                     fFieldRotationLength, mfFieldRotationCentreX, mfFieldRotationCentreY);
 
-                Mat filterFT = null;
+                Mat filterFTreal = null;
+                Mat filterFTimag = null;
                 btnDeblur.Text = "Deconv"; Application.DoEvents();
                 mREPAIRED = Deblur(nDeconvolveWidth, nDeconvolveHeight, imgToDeblur, psf, sInputFile, bProcessLuminanceAndRGB,
                     bWiener, bRegularisedInverseFilter, bConstrainedLeastSquared, dCLS_Y, bLandweber, bRichardsonLucy, nIterationCount,
                     nSmoothness, bFadeEdges,
                     bRepairTopBottom, mbDeblur, bCustomRepair, bEdgeTaper,
-                    nsr, gamma, beta, ref filterFT, dPSFRadius,
+                    nsr, gamma, beta, ref filterFTreal, ref filterFTimag, dPSFRadius,
                     bFieldRotationPSF, nTiles, fFieldRotationAngle, psfRotation, fFieldRotationLength,
                     bDeringing, fDeringingStarThreshold, fDeringingRepairStrength);
 
@@ -402,6 +412,19 @@ namespace Deconvolvulator
                         ref nDeconvolveWidth, ref nDeconvolveHeight, false, true, mnWidth, mnHeight, false);
                 }
 
+                //Calculate the PSF that would have been used to convolve, ie InverseFT(1/filterFT)
+                if (mbDeblur)
+                {
+                    if (bLandweber || bRichardsonLucy)
+                    {
+                        //Calculate filterFT manually using the output image and input image              
+                        filterFTreal = CalcFTByDivision(mREPAIRED, imgToDeblur);
+                        mPsfInvREPAIRED = PsfFromFT(filterFTreal, null);
+                    }
+                    else //Using an inverse filter
+                        mPsfInvREPAIRED = PsfFromFT(filterFTreal, filterFTimag);
+                }
+
                 if (mbROISet)
                 {
                     //Copy repaired mREPAIRED over the top of imgToDeblur_Input
@@ -420,7 +443,13 @@ namespace Deconvolvulator
                 if (mbDeblurDisplayUI)
                 {
                     //Display Cropped 2D PSF in PictureBox
-                    Mat psfCropped = PSFCroppedForDisplay(psf, (int)(udPSFPlotWidth.Value), 65000.0f);
+                    Mat psfDisplay = new Mat();
+                    if (chkInvPSF.Checked)
+                        psfDisplay = mPsfInvREPAIRED;
+                    else
+                        psfDisplay = psf;
+
+                    Mat psfCropped = PSFCroppedForDisplay(psfDisplay, (int)(udPSFPlotWidth.Value), 65000.0f);
                     MatToPictureBox(psfCropped, picPSF, false, new System.Drawing.Point(0, 0));
                     psfCropped.Dispose();
 
@@ -431,14 +460,20 @@ namespace Deconvolvulator
                     //Display a profile plot of PSF
                     if (!bMotionBlur && !bFieldRotationPSF)
                     {
-                        PlotPSFProfile(psf, picPSFProfile, (int)udPSFPlotWidth.Value, fPSFFWHMDisplay);
+                        PlotPSFProfile(psfDisplay, picPSFProfile, (int)udPSFPlotWidth.Value, fPSFFWHMDisplay);
                         PlotMTF(psf, fPSFFWHMDisplay);
                     }
 
+                    //Display the current filter used to repair (A Fourier Transform)
+                    if (optFilterFourierTransform.Checked)
+                        mDisplayFFTInPic(filterFTreal, picFilterFT, true, 0.0d, (double)udMaxPlotFT.Value);
+
                     mPsfREPAIRED = psf;
                     mFWHMREPAIRED = fPSFFWHMDisplay;
+                    mFTDisplayREPAIRED = filterFTreal;
 
                     //PSF profile dump to text for Excel etc
+                    /*
                     StringBuilder sbOut = new StringBuilder();
                     float PSFCentre = psf.At<float>(psf.Height / 2, psf.Width / 2);
                     float fThreshold = 0.0001f;
@@ -451,10 +486,8 @@ namespace Deconvolvulator
                         sbOut.Append((psf.At<float>(psf.Height / 2, i) / PSFCentre).ToString() + "\r\n");
                     }
                     txtPSFDump.Text = sbOut.ToString();
+                    */
 
-                    //Display FT of Wiener/Tikhonv filter
-                    if (optFilterFourierTransform.Checked && filterFT != null)
-                        mDisplayFFTInPic(filterFT.Rows, filterFT.Cols, filterFT, picFilterFT, true);
 
                     //Display a FT of the input image
                     //Output image greyscale value = log(1 + sqrt( (Real FT)^2 + (Imag FT)^2) )
@@ -568,27 +601,32 @@ namespace Deconvolvulator
 
                 }
 
-                if (filterFT != null)
-                    filterFT.Dispose();
+                if (filterFTimag != null)
+                    filterFTimag.Dispose();
+
                 GC.Collect();
 
                 mbDeblur = true;
 
-                btnDeblur.Text = "REPAIR"; Application.DoEvents();
+                btnDeblur.Text = "REPAIR";
+                Application.DoEvents();
                 btnDeblur.Enabled = true;
                 this.Cursor = Cursors.Default;
             }
             catch (Exception ex)
             {
-                txtPSFDump.Text = "ERROR: btnDeblur_Click " + ex.ToString();
-                txtPSFDump.SelectAll();
-                txtPSFDump.Focus();
+                txtDebug.Visible = true;
+                lblDebugError.Visible = true;
+                txtDebug.Text = "ERROR: btnDeblur_Click " + ex.ToString();
+                txtDebug.SelectAll();
+                txtDebug.Focus();
 
                 GC.Collect();
 
                 mbDeblur = true;
 
-                btnDeblur.Text = "REPAIR"; Application.DoEvents();
+                btnDeblur.Text = "REPAIR";
+                Application.DoEvents();
                 btnDeblur.Enabled = true;
                 this.Cursor = Cursors.Default;
             }
@@ -597,7 +635,8 @@ namespace Deconvolvulator
         private Mat Deblur(int nWidth, int nHeight, Mat imgInput, Mat psf, string sImageFile, bool bProcessLuminanceAndRGB,
                 bool bWiener, bool bRegularisedInverseFilter, bool bConstrainedLeastSquared, double CLS_Y, bool bLandweber, bool bRichardsonLucy,
                  int nIterationCount, int nBlurQuality, bool bFadeEdges, bool bRepairTopBottom, bool bDeblur,
-                 bool bCustomRepair, bool bEdgeTaper, double nsr, double gamma, double beta, ref Mat filterFT,
+                 bool bCustomRepair, bool bEdgeTaper, double nsr, double gamma, double beta, 
+                 ref Mat filterFTreal, ref Mat filterFTimag,
                  double dPSFRadius, bool bFieldRotationPSF, int nTiles, float fFieldRotationAngle, Mat[,] psfRotation,
                  float fFieldRotationLength, bool bDeringing, float fDeringingStarThreshold, float fDeringingRepairStrength)
         {
@@ -617,7 +656,7 @@ namespace Deconvolvulator
                 Mat deconvolved = Deblur(nWidth, nHeight, mercator, psf, "", bProcessLuminanceAndRGB, 
                              bWiener, bRegularisedInverseFilter, bConstrainedLeastSquared, CLS_Y, bLandweber, bRichardsonLucy,
                              nIterationCount, nBlurQuality, bFadeEdges, bRepairTopBottom, bDeblur,
-                              bCustomRepair, bEdgeTaper, nsr, gamma, beta, ref filterFT,
+                              bCustomRepair, bEdgeTaper, nsr, gamma, beta, ref filterFTreal, ref filterFTimag,
                               dPSFRadius, false, nTiles, fFieldRotationAngle, psfRotation, fFieldRotationLength,
                               bDeringing, fDeringingStarThreshold, fDeringingRepairStrength);
 
@@ -692,6 +731,7 @@ namespace Deconvolvulator
                 // especially in presence of medium and high amounts of noise. In low-noise cases,
                 // both the Wiener and the constrained least squares filtering tend to generate very similar results.
                 imgOut[nChannel] = new Mat();
+
                 if (!bDeblur)
                 {
                     //Apply blurring PSF
@@ -704,11 +744,11 @@ namespace Deconvolvulator
                         //Do multiple blur operation passes
                         trkBlur.Value = 100;
                         psf = calcPSFCircle(nWidth, nHeight, 1.0d, 0.0d, false, true, 1.0d, true);
-                        imgOut[nChannel] = applyTikhonovFilter(imgIn[nChannel], psf, CLS_Y, ref filterFT);
+                        imgOut[nChannel] = applyTikhonovFilter(imgIn[nChannel], psf, CLS_Y, ref filterFTreal, ref filterFTimag);
 
                         trkBlur.Value = 1;
                         psf = calcPSFCircle(nWidth, nHeight, 2.0d, 0.0d, false, true, 1.4d, true);
-                        imgOut[nChannel] = applyTikhonovFilter(imgOut[nChannel], psf, CLS_Y, ref filterFT);
+                        imgOut[nChannel] = applyTikhonovFilter(imgOut[nChannel], psf, CLS_Y, ref filterFTreal, ref filterFTimag);
 
                         psf = PSFCrop(psf, 10.0d, true);
 
@@ -723,25 +763,25 @@ namespace Deconvolvulator
                     //https://github.com/aurelienpierre/Image-Cases-Studies
                     else if (bWiener)
                     {
-                        imgOut[nChannel] = applyWienerFilter(imgIn[nChannel], psf, nsr, ref filterFT);
+                        imgOut[nChannel] = applyWienerFilter(imgIn[nChannel], psf, nsr, ref filterFTreal, ref filterFTimag);
                         //imgOut = deconvolutionByWiener__SmartDeblurClone(imgIn[nChannel], psf); //SmartDeblur way using FFTW
                     }
                     else if (bRegularisedInverseFilter)
                     {
-                        imgOut[nChannel] = applyInverseLaplacianRegularisedFilter(imgIn[nChannel], psf, nsr, ref filterFT);
+                        imgOut[nChannel] = applyInverseLaplacianRegularisedFilter(imgIn[nChannel], psf, nsr, ref filterFTreal, ref filterFTimag);
                     }
                     else if (bConstrainedLeastSquared)
                     {
                         mbMatIterationsStored = true;
-                        imgOut[nChannel] = applyTikhonovFilter(imgIn[nChannel], psf, CLS_Y, ref filterFT);
+                        imgOut[nChannel] = applyTikhonovFilter(imgIn[nChannel], psf, CLS_Y, ref filterFTreal, ref filterFTimag);
                         //imgOut = deconvolutionByTikhonov_SmartDeblurClone(imgIn[nChannel], psf); //SmartDeblur way using FFTW
                     }
                     else if (bLandweber)  //ITERATIONS
                     {
                         //Force blur quality to be zero
                         mbMatIterationsStored = true;
-                        imgOut[nChannel] = Landweber_FourierTransform(imgIn[nChannel], psf, nIterationCount, 0, nChannel, ref filterFT, false);
-                        //imgOut[nChannel] = Landweber(imgIn[nChannel], psf, nIterationCount, 0, nChannel, ref filterFT, false);
+                        imgOut[nChannel] = Landweber_FourierTransform(imgIn[nChannel], psf, nIterationCount, 0, nChannel,  false);
+                        //imgOut[nChannel] = Landweber(imgIn[nChannel], psf, nIterationCount, 0, nChannel,  false);
                     }
                     else if (bRichardsonLucy)  //ITERATIONS
                     {
@@ -763,7 +803,7 @@ namespace Deconvolvulator
 
                         //Identical results using Fourier transforms
                         //mbMatIterationsStored = true;
-                        //imgOut[nChannel] = RichardsonLucyDeconvolve_FourierTransform(imgIn[nChannel], psf, nIterationCount, nChannel, ref filterFT);
+                        //imgOut[nChannel] = RichardsonLucyDeconvolve_FourierTransform(imgIn[nChannel], psf, nIterationCount, nChannel);
 
                         //Identical results, but only if psf is seperable, ie for Gaussian ONLY
                         //mbMatIterationsStored = true;
@@ -1451,6 +1491,8 @@ namespace Deconvolvulator
                     //https://en.wikipedia.org/wiki/Voigt_profile
                     if (dVoigtGaussFraction != 1.0d)
                         dVoigtGaussFraction = dVoigtGaussFraction / (1.0d - dVoigtGaussFraction);
+                    else
+                        dVoigtGaussFraction = 1000.0d;
                     dAdjustPSFRadiusFactor = 1.0d / (0.5346 + Math.Sqrt(0.2166 + dVoigtGaussFraction * dVoigtGaussFraction));
                     dPSFRadius = dFWHM / 2.35 / 0.707;
                 }
@@ -1483,7 +1525,7 @@ namespace Deconvolvulator
                     //Combine two or more PSFs
                     if (dVoigtGaussFraction == 0.0d)
                         PSF = calcPSFCircle(nWidth, nHeight, dPSFRadius, dFeather, false, true, 1.0d,  bSymetrical);
-                    else if (dVoigtGaussFraction == 1.0d)
+                    else if (dVoigtGaussFraction == 1000.0d)
                         PSF = calcPSFCircle(nWidth, nHeight, dPSFRadius, dFeather, true, false, 0.0d,  bSymetrical);
                     else
                     {
@@ -1837,8 +1879,99 @@ namespace Deconvolvulator
         //Sharpening layers
         private bool mbLayersCalc = false;
         private Mat[] mLAYERS = new Mat[6];
+        private Mat[] mLayerKernels = new Mat[6];
         private bool mbIgnoreLayersChanged = false;
         private bool mbIgnoreKernelSharpeningLayersChanged = false;
+
+        private Mat KernelSharpeningLayers(int nKernelIndex)
+        {
+            Mat kernel = new Mat(3, 3, mImageTypeInternalChannel);
+            if (nKernelIndex <= 0)
+            {
+                //Default Laplacian
+                kernel = new Mat(3, 3, mImageTypeInternalChannel, new Scalar(-1.0f));
+                kernel.Set<float>(1, 1, 8.0f); //Kernel sums to 0.0f
+            }
+            else if (nKernelIndex == 1)
+            {
+                //Lorentz times 2, alpha = 1
+                kernel = new Mat(3, 3, mImageTypeInternalChannel, new Scalar(-1.0f)); //R2 = 1, fn = 2 x 1 / (1 + 1) = 1
+                kernel.Set<float>(0, 0, -0.67f); //R2 = 2, so fn = 2 x 1 / (2 + 1) = 0.67
+                kernel.Set<float>(0, 2, -0.67f);
+                kernel.Set<float>(2, 0, -0.67f);
+                kernel.Set<float>(2, 2, -0.67f);
+                kernel.Set<float>(1, 1, 6.68f); //Kernel sums to 0.0f
+            }
+            else if (nKernelIndex == 2)
+            {
+                //Laplacian, no diagonals
+                kernel = new Mat(3, 3, mImageTypeInternalChannel, new Scalar(0.0f));
+                kernel.Set<float>(0, 1, -1f);
+                kernel.Set<float>(1, 0, -1f);
+                kernel.Set<float>(1, 2, -1f);
+                kernel.Set<float>(2, 1, -1f);
+                kernel.Set<float>(1, 1, 4.0f); //Kernel sums to 0.0f
+            }
+            else if (nKernelIndex == 3)
+            {
+                //Gaussian
+                kernel = new Mat(3, 3, mImageTypeInternalChannel, new Scalar(-0.37f)); //R2 = 1, fn = 1/e
+                kernel.Set<float>(0, 0, -0.135f); //Corners //R2 = 2, fn = 1/e2
+                kernel.Set<float>(0, 2, -0.135f);
+                kernel.Set<float>(2, 0, -0.135f);
+                kernel.Set<float>(2, 2, -0.135f);
+                kernel.Set<float>(1, 1, 2.02f); //Kernel sums to 0.0f
+            }
+            else if (nKernelIndex == 4)
+            {
+                //Gaussian 5x5
+                kernel = new Mat(5, 5, mImageTypeInternalChannel, new Scalar(0.0f));
+                int nR2 = 0;
+                float fTot = 0.0f;
+                float fCurrentVal = 0.0f;
+                for (int x = 0; x < 5; x++)
+                {
+                    for (int y = 0; y < 5; y++)
+                    {
+                        nR2 = (y - 2) * (y - 2) + (x - 2) * (x - 2);
+                        if (nR2 != 0)
+                        {
+                            fCurrentVal = (float)Math.Exp(-nR2);
+                            fTot += fCurrentVal;
+                            kernel.Set<float>(y, x, -fCurrentVal);
+                        }
+                    }
+                }
+
+                kernel.Set<float>(2, 2, fTot); //Kernel sums to 0.0f
+            }
+            else if (nKernelIndex == 5)
+            {
+                //Lorentz 5x5
+                kernel = new Mat(5, 5, mImageTypeInternalChannel, new Scalar(0.0f));
+                int nR2 = 0;
+                float fTot = 0.0f;
+                float fCurrentVal = 0.0f;
+                for (int x = 0; x < 5; x++)
+                {
+                    for (int y = 0; y < 5; y++)
+                    {
+                        nR2 = (y - 2) * (y - 2) + (x - 2) * (x - 2);
+                        if (nR2 != 0)
+                        {
+                            fCurrentVal = (float)(1.0f / (1 + nR2));
+                            fTot += fCurrentVal;
+                            kernel.Set<float>(y, x, -fCurrentVal);
+                        }
+                    }
+                }
+
+                kernel.Set<float>(2, 2, fTot); //Kernel sums to 0.0f
+            }
+
+            return kernel;
+        }
+
         private void mSetUpSharpeningLayers()
         {
             float fNoiseControl = (float)udLayersNoiseControl.Value;
@@ -1868,93 +2001,11 @@ namespace Deconvolvulator
                 }
 
                 int nIterations = 6;
-                Mat kernel = new Mat(3, 3, mImageTypeInternalChannel);
                 int nKernelIndex = cboKernelSharpeningLayers.SelectedIndex;
-                if (nKernelIndex <= 0)
-                {
-                    //Default Laplacian
-                    kernel = new Mat(3, 3, mImageTypeInternalChannel, new Scalar(-1.0f));
-                    kernel.Set<float>(1, 1, 8.0f); //Kernel sums to 0.0f
-                }
-                else if (nKernelIndex == 1)
-                {
-                    //Lorentz times 2, alpha = 1
-                    kernel = new Mat(3, 3, mImageTypeInternalChannel, new Scalar(-1.0f)); //R2 = 1, fn = 2 x 1 / (1 + 1) = 1
-                    kernel.Set<float>(0, 0, -0.67f); //R2 = 2, so fn = 2 x 1 / (2 + 1) = 0.67
-                    kernel.Set<float>(0, 2, -0.67f);
-                    kernel.Set<float>(2, 0, -0.67f);
-                    kernel.Set<float>(2, 2, -0.67f);
-                    kernel.Set<float>(1, 1, 6.68f); //Kernel sums to 0.0f
-                }
-                else if (nKernelIndex == 2)
-                {
-                    //Laplacian, no diagonals
-                    kernel = new Mat(3, 3, mImageTypeInternalChannel, new Scalar(0.0f));
-                    kernel.Set<float>(0, 1, -1f);
-                    kernel.Set<float>(1, 0, -1f);
-                    kernel.Set<float>(1, 2, -1f);
-                    kernel.Set<float>(2, 1, -1f);
-                    kernel.Set<float>(1, 1, 4.0f); //Kernel sums to 0.0f
-                }
-                else if (nKernelIndex == 3)
-                {
-                    //Gaussian
-                    kernel = new Mat(3, 3, mImageTypeInternalChannel, new Scalar(-0.37f)); //R2 = 1, fn = 1/e
-                    kernel.Set<float>(0, 0, -0.135f); //Corners //R2 = 2, fn = 1/e2
-                    kernel.Set<float>(0, 2, -0.135f);
-                    kernel.Set<float>(2, 0, -0.135f);
-                    kernel.Set<float>(2, 2, -0.135f);
-                    kernel.Set<float>(1, 1, 2.02f); //Kernel sums to 0.0f
-                }
-                else if (nKernelIndex == 4)
-                {
-                    //Gaussian 5x5
-                    kernel = new Mat(5, 5, mImageTypeInternalChannel, new Scalar(0.0f));
-                    int nR2 = 0;
-                    float fTot = 0.0f;
-                    float fCurrentVal = 0.0f;
-                    for (int x = 0; x < 5; x++)
-                    {
-                        for (int y = 0; y < 5; y++)
-                        {
-                            nR2 = (y - 2) * (y - 2) + (x - 2) * (x - 2);
-                            if (nR2 != 0)
-                            {
-                                fCurrentVal = (float)Math.Exp(-nR2);
-                                fTot += fCurrentVal;
-                                kernel.Set<float>(y, x, -fCurrentVal);
-                            }
-                        }
-                    }
-                    
-                    kernel.Set<float>(2, 2, fTot); //Kernel sums to 0.0f
-                }
-                else if (nKernelIndex == 5)
-                {
-                    //Lorentz 5x5
-                    kernel = new Mat(5, 5, mImageTypeInternalChannel, new Scalar(0.0f));
-                    int nR2 = 0;
-                    float fTot = 0.0f;
-                    float fCurrentVal = 0.0f;
-                    for (int x = 0; x < 5; x++)
-                    {
-                        for (int y = 0; y < 5; y++)
-                        {
-                            nR2 = (y - 2) * (y - 2) + (x - 2) * (x - 2);
-                            if (nR2 != 0)
-                            {
-                                fCurrentVal = (float)(1.0f / (1 + nR2));
-                                fTot += fCurrentVal;
-                                kernel.Set<float>(y, x, -fCurrentVal);
-                            }
-                        }
-                    }
-
-                    kernel.Set<float>(2, 2, fTot); //Kernel sums to 0.0f
-                }
+                Mat kernel = KernelSharpeningLayers(nKernelIndex);
 
                 mLAYERS = Layers(nWidthToProcess, nHeightToProcess, imgToCalcLayersFor, nIterations, kernel, 
-                    fNoiseControl, nKernelIndex, fScaleLayerSizeBy);
+                    fNoiseControl, nKernelIndex, fScaleLayerSizeBy, ref mLayerKernels);
                 kernel.Dispose(); //For what it's worth
                 mbLayersCalc = true;
 
@@ -1972,10 +2023,28 @@ namespace Deconvolvulator
             }
         }
 
-   
+        private float KernelScaleFactor(int nKernelMode)
+        {
+            //Scale some kernels higher (in intensity, not scale) to match appearance of other kernels
+            float fScaleFactor = 1.0f;
+            if (nKernelMode == 0)
+                fScaleFactor = 1.0f;
+            if (nKernelMode == 1)
+                fScaleFactor = 1.35f;
+            if (nKernelMode == 2)
+                fScaleFactor = 3.0f;
+            if (nKernelMode == 3)
+                fScaleFactor = 5.0f;
+            else if (nKernelMode == 4)
+                fScaleFactor = 4.0f;
+            else if (nKernelMode == 5)
+                fScaleFactor = 0.7f;
 
-        private Mat[] Layers(int nWidth, int nHeight, Mat imgInput, int nIter, 
-                                Mat kernel, float fNoiseControl, int nKernelMode, float fScaleLayerSizeBy)
+            return fScaleFactor;
+        }
+
+        private Mat[] Layers (int nWidth, int nHeight, Mat imgInput, int nIter, 
+                                Mat kernel, float fNoiseControl, int nKernelMode, float fScaleLayerSizeBy, ref Mat[] LayerKernels)
         {
             Mat[] imgIn = new Mat[mnChannels]; //Don't dispose, Mat passed in imgInput
             Cv2.Split(imgInput, out imgIn);
@@ -1984,7 +2053,8 @@ namespace Deconvolvulator
 
             for (int nChannel = 0; nChannel < mnChannels; nChannel++)
             {
-                mChannelLayers[nChannel] = LayerCalc(nIter, imgIn[nChannel], kernel, fNoiseControl, nKernelMode, fScaleLayerSizeBy);
+                mChannelLayers[nChannel] = LayerCalc(nIter, imgIn[nChannel], kernel, fNoiseControl, 
+                    nKernelMode, fScaleLayerSizeBy, ref LayerKernels);
             }
 
             if (mnChannels != 1)
@@ -2017,8 +2087,117 @@ namespace Deconvolvulator
             return OutputLayers;
         }
 
-        private Mat[] LayerCalc(int nIter, Mat imgIn, Mat kernel, float fNoiseControl, int nKernelMode, float fScaleLayerSizeBy)
+        private Mat[] LayerCalc(int nIter, Mat imgIn, Mat kernel, float fNoiseControl, int nKernelMode, 
+            float fScaleLayerSizeBy, ref Mat[] LayerKernels)
         {
+            //Use the same image, imgIn to convolve with a kernel which is double, same size, half size, 
+            // quarter size, eight size, and one sixteenth size of original kernel
+            //Except for the 0.5px layer, in this case double the input image in size, apply standard size
+            // kernel, and resize down again
+            //These become the six layers
+            //1) Convolve kernel with Gaussian if  fNoiseControl > 0
+            //2) Resize the kernel
+            //3) Convolve the image, imgIn, with the resized kernel
+            //See also LayerCalc_SameKernelSize
+
+            Mat[] Layers = new Mat[nIter]; //Returned
+            LayerKernels = new Mat[nIter];
+            float fSigma = fNoiseControl;  //Same as doing a radius 1.0 gaussian blur in photoshop
+            Mat kernelGauss = null;
+
+            int nWidth = imgIn.Width;
+            int nHeight = imgIn.Height;
+            int nKernelWidth = kernel.Width;
+            int nKernelHeight = kernel.Height;
+            float fCurrentScale = 0.5f;
+            float fKernelSum = 0.0f;
+
+            //Scale some kernels higher (in intensity, not scale) to match appearance of other kernels
+            float fScaleFactor = KernelScaleFactor(nKernelMode);
+
+            Mat imgKernelResized = kernel.EmptyClone(); //Disposed
+            Mat imgKernelBlurred = kernel.EmptyClone(); //Disposed
+            float fLayerPowerScale = 1.0f; //Extra factor for each layer, 2px layer x 1.0, 1px x 2.0, 0.5px x 4 etc
+            Mat imgDoubleSize = new Mat();
+            Cv2.Resize(imgIn, imgDoubleSize, new Size(nWidth*2, nHeight*2), 0.0f, 0.0f, InterpolationFlags.Lanczos4);
+
+            for (int i = 0; i < nIter; i++)
+            {
+                //If noise reduction selected, then Gaussian blur Convolved
+                //Scale sigma according to fCurrentScale, ie less noise reduction required when
+                // when have already resampled down
+                if (fSigma != 0.0f)
+                {
+                    kernelGauss = GaussKernel(fSigma / (fCurrentScale * fScaleLayerSizeBy), 0.0005f);
+                    imgKernelBlurred = kernelGauss.EmptyClone();
+                    Cv2.Filter2D(kernelGauss, imgKernelBlurred, imgIn.Depth(), kernel, null, 0, BorderTypes.Reflect);
+                }
+                else
+                    imgKernelBlurred = kernel.Clone();
+
+                //Make imgKernelBlurred sum to 0.0, we want these to be DIFFERENCE layers, so sum to zero
+                fKernelSum = (float)imgKernelBlurred.Sum().Val0;
+                imgKernelBlurred = imgKernelBlurred - fKernelSum / imgKernelBlurred.Width / imgKernelBlurred.Height;
+
+                Layers[i] = imgIn.EmptyClone();
+
+                //Resize imgKernelBlurred to the required kernel size for this layer
+                int nNewWidth = (int)Math.Floor(fCurrentScale * fScaleLayerSizeBy * imgKernelBlurred.Width);
+                int nNewHeight = (int)Math.Floor(fCurrentScale * fScaleLayerSizeBy * imgKernelBlurred.Height);
+                if (nNewHeight % 2 == 0)
+                    nNewHeight = nNewHeight + 1;
+                if (nNewWidth % 2 == 0)
+                    nNewWidth = nNewWidth + 1;
+
+                if (nNewWidth != imgKernelBlurred.Width || nNewHeight != imgKernelBlurred.Height)
+                    Cv2.Resize(imgKernelBlurred, imgKernelResized, new Size(nNewWidth, nNewHeight), 0.0f,
+                        0.0f, InterpolationFlags.Cubic);
+                else
+                    imgKernelResized = imgKernelBlurred;
+
+                //Make imgKernelResized sum to 0.0, we want these to be DIFFERENCE layers, so sum to zero
+                fKernelSum = (float)imgKernelResized.Sum().Val0;
+                imgKernelResized = imgKernelResized - fKernelSum / imgKernelResized.Width / imgKernelResized.Height;
+
+                //Convolve imgIn with imgKernelResized, store in Layers[i]
+                if (i != 0)
+                    Cv2.Filter2D(imgIn, Layers[i], imgIn.Depth(), imgKernelResized, null, 0, BorderTypes.Reflect);
+                else
+                {
+                    //0.5 px scale - SPECIAL CASE
+                    //Convolve double image with imgKernelBlurred, store in Layers[i]
+                    Cv2.Filter2D(imgDoubleSize, Layers[0], imgIn.Depth(), imgKernelBlurred, null, 0, BorderTypes.Reflect);
+                    //Resize Layers[0]
+                    Cv2.Resize(Layers[0], Layers[0], new Size(nWidth, nHeight), 0.0f, 0.0f, InterpolationFlags.Lanczos4);
+                }
+
+                //Scale the layer intensity so that it matches LayerCalc_SameKernelSize 
+                fLayerPowerScale = (float)Math.Pow(12.0d, 1.4 - i - fScaleLayerSizeBy + 1.0) ;
+                Layers[i] = Layers[i] * fLayerPowerScale * fScaleFactor;
+
+                LayerKernels[i] = imgKernelResized.Clone() * fLayerPowerScale * fScaleFactor;
+
+                fCurrentScale = fCurrentScale * 2.0f;
+            }
+
+            imgDoubleSize.Dispose();
+            imgKernelResized.Dispose();
+            imgKernelBlurred.Dispose();
+            GC.Collect();
+
+            return Layers;
+        }
+
+
+        private Mat[] LayerCalc_SameKernelSize(int nIter, Mat imgIn, Mat kernel, float fNoiseControl, int nKernelMode, float fScaleLayerSizeBy)
+        {
+            //Use the same kernel to convolve with an image size which is double, same size, half size, 
+            // quarter size, eight size, and one sixteenth size of original
+            //1) Change image size
+            //2) Convolve with kernel
+            //3) Convolve with Gaussian if  fNoiseControl > 0
+            //See also LayerCalc
+
             Mat[] Layers = new Mat[nIter]; //Returned
             Mat Convolved = imgIn.EmptyClone(); //Disposed
             float fSigma = fNoiseControl;  //Same as doing a radius 1.0 gaussian blur in photoshop
@@ -2031,10 +2210,11 @@ namespace Deconvolvulator
                 nCurrentWidth = (int)Math.Round(nCurrentWidth / fScaleLayerSizeBy, 0);
                 nCurrentHeight = (int)Math.Round(nCurrentHeight / fScaleLayerSizeBy, 0);
             }
-            
-            float fScaleFactor = 1.0f;
-            if (nKernelMode == 3 || nKernelMode == 4)
-                fScaleFactor = 4.0f; //Scale Gaussian kernels higher to match appearance of other modes
+
+            //Scale some kernels higher (in intensity, not scale) to match appearance of other kernels
+            float fScaleFactor = KernelScaleFactor(nKernelMode);
+
+            float fLayerPowerScale = 1.0f; //Extra factor for each layer, 2px layer x 1.0, 1px x 2.0, 0.5px x 4 etc
 
             Mat imgResized = imgIn.EmptyClone(); //Disposed
             Cv2.Resize(imgIn, imgResized, new Size(nCurrentWidth, nCurrentHeight), 0.0f, 0.0f, InterpolationFlags.Linear);
@@ -2057,8 +2237,8 @@ namespace Deconvolvulator
                 //Resize Convolved to the actual image size, normally an increase in size
                 Cv2.Resize(Convolved, Layers[i], new Size(imgIn.Width, imgIn.Height), 0.0f, 0.0f, InterpolationFlags.Lanczos4);
 
-                if (fScaleFactor != 1.0f)
-                    Layers[i] = Layers[i] * fScaleFactor;
+                fLayerPowerScale = (float)Math.Pow(2.0d, 2 - i);
+                Layers[i] = Layers[i] * fScaleFactor * fLayerPowerScale;
 
                 //Resize imgResized at half current size for next time in loop
                 nCurrentWidth = nCurrentWidth / 2;
@@ -2120,15 +2300,13 @@ namespace Deconvolvulator
                 }
                 float fMultiplyBy = 1.0f;
 
-                float fLayerPowerScale = 1.0f; //Extra factor for each layer, 2px layer x 1.0, 1px x 2.0, 0.5px x 4 etc
                 if (fTotalLayerWgts != 0.0f)
                 {
                     for (int i = 0; i < fLayerWgts.Length; i++)
                     {
                         if (fLayerWgts[i] != 0.0f)
                         {
-                            fLayerPowerScale = (float)Math.Pow(2.0d, 2 - i);
-                            fMultiplyBy = fLayerWgts[i] * fScaleLayers / fAllLayerAdjust / fTotalLayerWgts * fLayerPowerScale;
+                            fMultiplyBy = fLayerWgts[i] * fScaleLayers / fAllLayerAdjust / fTotalLayerWgts;
                             mREPAIRED = mREPAIRED + mLAYERS[i] * fMultiplyBy;
                         }
                     }
@@ -2136,6 +2314,80 @@ namespace Deconvolvulator
 
                 mREPAIRED_Unstretched = mREPAIRED.Clone();
 
+                //Calculate the repairing psf that is being applied to the input image, ie, the psf used to deconvolve
+                //This is the sum of the kernels in mLayerKernels, weighted by the currently selected weights defined in 
+                // the user interface
+                int nCurKernelWidth = 0;
+                int nCurKernelHeight = 0;
+                Mat psfCombined = new Mat( mLayerKernels[mLayerKernels.Length - 1].Height,
+                    mLayerKernels[mLayerKernels.Length - 1].Width, mLayerKernels[0].Type(), new Scalar(0.0f)); //The biggest kernel
+                //Central pixel in psfCombined is the original image, so set to 1.0
+                psfCombined.Set<float>(psfCombined.Height / 2, psfCombined.Width / 2, 1.0f);
+                Mat psfFullsizeKernel = new Mat();
+                if (fTotalLayerWgts != 0.0f)
+                {
+                    for (int i = 0; i < fLayerWgts.Length; i++)
+                    {
+                        if (fLayerWgts[i] != 0.0f)
+                        {
+                            fMultiplyBy = fLayerWgts[i] * fScaleLayers / fAllLayerAdjust / fTotalLayerWgts;
+                            psfFullsizeKernel = new Mat(psfCombined.Height, psfCombined.Width, psfCombined.Type(), new Scalar(0.0f));
+
+                            nCurKernelWidth = mLayerKernels[i].Width;
+                            nCurKernelHeight = mLayerKernels[i].Height;
+
+                            //Copy small kernel to psfFullsizeKernel
+                            Rect roi = new Rect(psfCombined.Width / 2- nCurKernelWidth/2,
+                                psfCombined.Height / 2 - nCurKernelHeight / 2, nCurKernelWidth, nCurKernelHeight);
+                            mLayerKernels[i].CopyTo(new Mat(psfFullsizeKernel, roi));
+
+                            //Stack this kernel onto the combined kernel
+                            psfCombined = psfCombined + psfFullsizeKernel * fMultiplyBy;
+                        }
+                    }
+                }
+                //Store the kernel used to repair
+                mPsfREPAIRED = psfCombined.Clone();
+                psfFullsizeKernel.Dispose();
+
+                //Calculate FT of the repairing PSF and display in picFilterFT
+                Mat real = new Mat(); //Disposed
+                Mat imag = new Mat(); //Disposed
+                DFT(psfCombined, null, ref real, ref imag, DftFlags.None);
+                Mat filterFT = real.Mul(real) + imag.Mul(imag);
+                Cv2.Pow(filterFT, 0.5d, filterFT);
+                if (optFilterFourierTransform.Checked)
+                    mDisplayFFTInPic(filterFT, picFilterFT, true, 0.0d, (double)udMaxPlotFT.Value);
+                //Store this FT
+                mFTDisplayREPAIRED = filterFT;
+                //Calculate the PSF that would have been used to convolve, ie InverseFT(1/filterFT)
+                mPsfInvREPAIRED = PsfFromFT(real, imag);
+                mPsfInvREPAIRED = rearrangeQuadrants(mPsfInvREPAIRED);
+                mFWHMREPAIRED = 0.0f;
+                //And display
+                if (fTotalLayerWgts == 0.0f)
+                {
+                    picPSFProfile.Image = null;
+                    picPSF.Image = null;
+                }
+                else
+                {
+                    Mat psfDisplay = new Mat();
+                    if (chkInvPSF.Checked)
+                        psfDisplay = mPsfInvREPAIRED;
+                    else
+                        psfDisplay = mPsfREPAIRED;
+
+                    PlotPSFProfile(psfDisplay, picPSFProfile, (int)udPSFPlotWidth.Value, 0.0f);
+                    Mat psfCropped = PSFCroppedForDisplay(psfDisplay, (int)(udPSFPlotWidth.Value), 65000.0f);
+                    MatToPictureBox(psfCropped, picPSF, false, new System.Drawing.Point());
+                    psfCropped.Dispose();
+                }
+                real.Dispose();
+                imag.Dispose();
+                psfCombined.Dispose();
+
+                //Description of repair
                 msRepairedDesription = "SHARPENING LAYERS ";
                 if (chkLayers0.Checked)
                     msRepairedDesription += "0.5px=" + trkLayers0.Value.ToString() + " ";
@@ -2162,6 +2414,7 @@ namespace Deconvolvulator
                 if (chkAutostretch.Checked)
                     mREPAIRED = StretchImagePercentiles(mREPAIRED, mnPercentilesStretchMin, mnPercentilesStretchMax);
 
+                //Display the repaired image
                 if (mbROISet)
                 {
                     //Copy repaired mREPAIRED over the top of imgToDeblur_Input
@@ -2171,7 +2424,6 @@ namespace Deconvolvulator
                     mSmall.CopyTo(new Mat(mREPAIRED, roi));
                     mSmall.Dispose();
                 }
-
                 MatToPictureBox_Zoomed(mREPAIRED, picOut, msRepairedDesription, true, false, false);
 
                 if (cboCurrent.Items[cboCurrent.Items.Count - 1].ToString() != "REPAIRED")
@@ -2188,9 +2440,11 @@ namespace Deconvolvulator
             }
             catch (Exception ex)
             {
-                txtPSFDump.Text = "ERROR: Combine Layers " + ex.ToString();
-                txtPSFDump.SelectAll();
-                txtPSFDump.Focus();
+                txtDebug.Visible = true;
+                lblDebugError.Visible = true;
+                txtDebug.Text = "ERROR: Combine Layers " + ex.ToString();
+                txtDebug.SelectAll();
+                txtDebug.Focus();
 
                 this.Cursor = Cursors.Default;
             }
@@ -2204,7 +2458,7 @@ namespace Deconvolvulator
         }
 
         //WIENER Filter
-        private Mat applyWienerFilter(Mat inputImg, Mat psf, double dNoiseToSignalRatio, ref Mat WnrFilter_Real)
+        private Mat applyWienerFilter(Mat inputImg, Mat psf, double dNoiseToSignalRatio, ref Mat WnrFilter_Real, ref Mat WnrFilter_Imag)
         {
             //Image input z (Greyscale value at x,y) = SUM ( a * Sin (hx + ky) )
             //Each pixel in the Fourier transform has a coordinate (h,k) representing the contribution 
@@ -2213,7 +2467,7 @@ namespace Deconvolvulator
             //and its intensity (its brightness in colour in the grey scale) is the average value of the pixels in the image
 
             //Rearrange the quadrants of the input PSF
-            Mat psf_shifted = fftshift(psf); //Disposed
+            Mat psf_shifted = rearrangeQuadrants(psf); //Disposed
             Mat PSF_FTReal = new Mat(); //Disposed
             Mat PSF_FTImag = new Mat(); //Disposed
             //Fourier transform of shifted input PSF
@@ -2228,7 +2482,7 @@ namespace Deconvolvulator
             //Wiener Filter = Complex conjugate of (PSF Fourier Transform) / Denominator
             WnrFilter_Real = psf.EmptyClone();
             Cv2.Divide(PSF_FTReal, denom, WnrFilter_Real);
-            Mat WnrFilter_Imag = psf.EmptyClone(); //Set to inputPlanes[1] which is disposed
+            WnrFilter_Imag = psf.EmptyClone(); //Set to inputPlanes[1]
             Cv2.Divide(-PSF_FTImag, denom, WnrFilter_Imag); //The conjugate of, so minus
 
             PSF_FTReal.Dispose();
@@ -2243,8 +2497,40 @@ namespace Deconvolvulator
             inputPlanes[0] = WnrFilter_Real; //Returned, not disposed
             inputPlanes[1] = WnrFilter_Imag;  //Disposed
             Cv2.Merge(inputPlanes, WienerFilter);
-            inputPlanes[1].Dispose();
             GC.Collect();
+
+            if (mbDebug)
+            {
+                StringBuilder sbDebug = new StringBuilder();
+                Mat Mag = inputImg.EmptyClone();
+                //Magnitude of WnrFilter
+                Cv2.Magnitude(WnrFilter_Real, WnrFilter_Imag, Mag);
+                for (int x = 0; x <= mnWidth / 2; x++)
+                {
+                    sbDebug.Append(x.ToString() + "\t" + WnrFilter_Real.At<float>(0, x).ToString()
+                        + "\t" + WnrFilter_Imag.At<float>(0, x).ToString() + "\t" +
+                        Mag.At<float>(0, x).ToString() + "\r\n");
+                }
+                txtDebug.Text = sbDebug.ToString();
+                //What PSF is WienerFilter the same as ?
+                Mat PSFWiener = WienerFilter.EmptyClone();
+                Cv2.Idft(WienerFilter, PSFWiener, DftFlags.Scale);
+                Mat[] planesPSF = new Mat[2];
+                planesPSF = Cv2.Split(PSFWiener);
+                planesPSF[0] = rearrangeQuadrants(planesPSF[0]);
+                planesPSF[1] = rearrangeQuadrants(planesPSF[1]);
+                Cv2.Magnitude(planesPSF[0], planesPSF[1], Mag);
+                sbDebug = new StringBuilder();
+                for (int x = mnWidth / 2; x >= 0; x--)
+                {
+                    sbDebug.Append(x.ToString() + "\t" + planesPSF[0].At<float>(mnHeight/2, x).ToString()
+                        + "\t" + planesPSF[1].At<float>(mnHeight / 2, x).ToString() + "\t" +
+                        Mag.At<float>(mnHeight / 2, x).ToString() + "\r\n");
+                }
+                txtDebug.Text = sbDebug.ToString();
+
+                Mag.Dispose();
+            }
 
             //APPLY the Wiener filter
             //Fourier transform on input image
@@ -2278,13 +2564,13 @@ namespace Deconvolvulator
 
         //INVERSE Filter (Regularised with Lapacian operator)
         private Mat applyInverseLaplacianRegularisedFilter(Mat inputImg, Mat psf, double dNoiseToSignalRatio, 
-            ref Mat Filter_Real)
+            ref Mat Filter_Real, ref Mat Filter_Imag)
         {
             //DeconvolutionLab2 RIF method "Regularized inverse filtering"
             //D. Sage et al. / Methods 115 (2017) 28–41: 3.4
 
             //Rearrange the quadrants of the input PSF
-            Mat psf_shifted = fftshift(psf); //Disposed
+            Mat psf_shifted = rearrangeQuadrants(psf); //Disposed
             Mat PSF_FTReal = new Mat(); //Disposed
             Mat PSF_FTImag = new Mat(); //Disposed
             //Fourier transform of shifted input PSF
@@ -2313,7 +2599,7 @@ namespace Deconvolvulator
             //Filter to apply = Numerator / Denominator
             Filter_Real = psf.EmptyClone();
             Cv2.Divide(PSF_FTReal, denom, Filter_Real);
-            Mat Filter_Imag = psf.EmptyClone(); //Set to inputPlanes[1] which is disposed
+            Filter_Imag = psf.EmptyClone(); //Set to inputPlanes[1] which is disposed
             Cv2.Divide(-PSF_FTImag, denom, Filter_Imag); //The conjugate of, so minus
 
             PSF_FTReal.Dispose();
@@ -2326,9 +2612,8 @@ namespace Deconvolvulator
             Mat Filter = psf.EmptyClone();
             Mat[] inputPlanes = new Mat[2]; //Disposed
             inputPlanes[0] = Filter_Real; //Returned, not disposed
-            inputPlanes[1] = Filter_Imag;  //Disposed
+            inputPlanes[1] = Filter_Imag;   //Returned, not disposed
             Cv2.Merge(inputPlanes, Filter);
-            inputPlanes[1].Dispose();
             GC.Collect();
 
             //APPLY the filter
@@ -2353,7 +2638,7 @@ namespace Deconvolvulator
         }
 
         //TIKHONOV Filter
-        private Mat applyTikhonovFilter(Mat inputImg, Mat PSF, double Y, ref Mat tikhonovValueReal)
+        private Mat applyTikhonovFilter(Mat inputImg, Mat PSF, double Y, ref Mat tikhonovValueReal, ref Mat tikhonovValueImag)
         {
             //https://github.com/pratscy3/Inverse-Filtering
             //Also called Tikhonov filtration, or Tikhonov regularization
@@ -2385,7 +2670,7 @@ namespace Deconvolvulator
             laplacian.Dispose();
 
             //Fourier transform on shifted PSF
-            Mat PSF_shifted = fftshift(PSF); //Disposed
+            Mat PSF_shifted = rearrangeQuadrants(PSF); //Disposed
             Mat PSF_FTReal = new Mat(); //Disposed
             Mat PSF_FTImag = new Mat(); //Disposed
             Mat PSF_shifted_FT = DFT(PSF_shifted, null, ref PSF_FTReal, ref PSF_FTImag, DftFlags.None); //Disposed
@@ -2405,7 +2690,7 @@ namespace Deconvolvulator
             //Filter to apply = Numerator / Denominator
             tikhonovValueReal = inputImg.EmptyClone(); //Mat passed in by ref
             tikhonovValueReal = PSF_FTReal / denom;
-            Mat tikhonovValueImag = inputImg.EmptyClone(); //Disposed
+            tikhonovValueImag = inputImg.EmptyClone(); //Disposed
             tikhonovValueImag = PSF_FTImag / denom;
             PSF_FTReal.Dispose();
             PSF_FTImag.Dispose();
@@ -2414,12 +2699,10 @@ namespace Deconvolvulator
             //Combine the real and imaginary components to make the complex Tikhonov filter, to use with Cv2.MulSpectrums
             Mat multipliedResult = PSF_shifted_FT.EmptyClone(); //Disposed
             Mat tikhonov = PSF_shifted_FT.EmptyClone(); //Disposed
-            Mat[] tikhonov_Planes = new Mat[2]; //One disposed
+            Mat[] tikhonov_Planes = new Mat[2]; //Returned, not disposed
             tikhonov_Planes[0] = tikhonovValueReal; //Mat passed in by ref
             tikhonov_Planes[1] = tikhonovValueImag;
             Cv2.Merge(tikhonov_Planes, tikhonov);
-            tikhonovValueImag.Dispose();
-            tikhonov_Planes[1].Dispose();
 
             //Apply the Tikhonov filter
             Cv2.MulSpectrums(inputImgFT, tikhonov, multipliedResult, DftFlags.None);
@@ -2444,7 +2727,7 @@ namespace Deconvolvulator
 
         //LANDWEBER deconvolution
         private Mat Landweber(Mat imgIn, Mat PSF, int nIterationCount,
-                int nBlurQuality, int nChannel, ref Mat filterFT, bool bRegularize)
+                int nBlurQuality, int nChannel, bool bRegularize)
         {
             int nWidth = imgIn.Width;
             int nHeight = imgIn.Height;
@@ -2546,7 +2829,7 @@ namespace Deconvolvulator
 
         //LANDWEBER deconvolution FT, Forcing colvolutions to be calculated using FTs, faster
         private Mat Landweber_FourierTransform(Mat imgIn, Mat PSF, int nIterationCount, 
-            int nBlurQuality, int nChannel, ref Mat filterFT, bool bRegularize)
+            int nBlurQuality, int nChannel, bool bRegularize)
         {
             int nWidth = imgIn.Width;
             int nHeight = imgIn.Height;
@@ -2571,12 +2854,11 @@ namespace Deconvolvulator
             double tau = 1.9 / (1 + lambda * 8 / epsilon); //Range 1.9 to 0.1, will be 1.863 with blur quality 0
 
             //Rearrange the quadrants of the input PSF
-            Mat PSF_shifted = fftshift(PSF); //Disposed
+            Mat PSF_shifted = rearrangeQuadrants(PSF); //Disposed
             //Transform PSF to PSF_FFT_Squared
             Mat FTReal = new Mat(); //Disposed after loop
             Mat FTImag = new Mat(); //Disposed after loop
             Mat PSF_FFT = DFT(PSF_shifted, null, ref FTReal, ref FTImag, DftFlags.None); //Disposed //Divide by no of elements 
-            filterFT = FTReal.Clone();
             Mat PSF_FFT_Squared = PSF_FFT.EmptyClone(); //Disposed after loop
             Cv2.MulSpectrums(PSF_FFT, PSF_FFT, PSF_FFT_Squared, DftFlags.None);
             PSF_shifted.Dispose();
@@ -2874,7 +3156,8 @@ namespace Deconvolvulator
             return output;
         }
 
-        private Mat RichardsonLucyDeconvolve_FourierTransform(Mat observed, Mat PSF, int nIterationCount, int nChannel, ref Mat filterFT)
+        private Mat RichardsonLucyDeconvolve_FourierTransform(Mat observed, Mat PSF, int nIterationCount, 
+            int nChannel)
         {
             SetUpIterations(observed, nChannel, nIterationCount);
             Mat repaired = new Mat(mnHeight, mnWidth, mImageTypeInternalChannel, new Scalar(0));
@@ -2887,13 +3170,10 @@ namespace Deconvolvulator
             Scalar summa = Cv2.Sum(PSF);
             PSF = PSF / summa[0];
 
-            Mat PSF_shifted = fftshift(PSF);
+            Mat PSF_shifted = rearrangeQuadrants(PSF);
             Mat PSF_FTReal = new Mat();
             Mat PSF_FTImag = new Mat();
             Mat PSFFT_shifted = DFT(PSF_shifted, null, ref PSF_FTReal, ref PSF_FTImag, DftFlags.None); //No scale
-
-            //For display of FT of filter
-            filterFT = PSF_FTReal;
 
             Mat repaired_FTReal = new Mat();
             Mat repaired_FTImag = new Mat();
@@ -3022,11 +3302,20 @@ namespace Deconvolvulator
                 return;
 
             Mat mCurrentPSF = new Mat();
-            if (cboCurrent.SelectedItem.ToString() == "REPAIRED")
-                mCurrentPSF = mPsfREPAIRED;
+            if (chkInvPSF.Checked)
+            {
+                if (cboCurrent.SelectedItem.ToString() == "REPAIRED")
+                    mCurrentPSF = mPsfInvREPAIRED;
+                else
+                    mCurrentPSF = mPSFInvHistory[cboCurrent.SelectedIndex];
+            }
             else
-                mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
-
+            {
+                if (cboCurrent.SelectedItem.ToString() == "REPAIRED")
+                    mCurrentPSF = mPsfREPAIRED;
+                else
+                    mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+            }
             if (mCurrentPSF == null)
                 return;
 
@@ -3042,7 +3331,8 @@ namespace Deconvolvulator
         {
             int nSize = 0;
             float fConstant = 1.0f / fSigma / (float)Math.Sqrt(2.0f * Math.PI);
-            while (fConstant * Math.Exp(-2 * nSize * nSize / fSigma / fSigma) > fThreshold)
+            float fMax = fConstant;
+            while (fConstant * Math.Exp(-2 * nSize * nSize / fSigma / fSigma) > fThreshold * fMax)
                 nSize++;
             nSize = nSize + 1;
             float fRadialDistSquared = 0.0f;
@@ -3055,7 +3345,7 @@ namespace Deconvolvulator
             {
                 for (int y = 0; y < nSize * 2 + 1; y++)
                 {
-                    fRadialDistSquared = (x - nSize) * (x - nSize) + (y - nSize) * (y - nSize);
+                    fRadialDistSquared = (x - nMiddle) * (x - nMiddle) + (y - nMiddle) * (y - nMiddle);
                     fCurrentVal = fConstant * (float)Math.Exp(-fRadialDistSquared / fSigma / fSigma / 2);
                     fKernelSum = fKernelSum + fCurrentVal;
                     kernel.Set<float>(y, x, fCurrentVal);
@@ -3096,7 +3386,7 @@ namespace Deconvolvulator
             Mat img1FT = DFT(img1, null, ref img1_FTReal, ref img1_FTImag, DftFlags.Scale); //Scale, ie divide by no of elements
 
             //Fourier transform on img2
-            Mat img2_shifted = fftshift(img2);
+            Mat img2_shifted = rearrangeQuadrants(img2);
             Mat img2_FTReal = new Mat();
             Mat img2_FTImag = new Mat();
             Mat img2FT_shifted = DFT(img2_shifted, null, ref img2_FTReal, ref img2_FTImag, DftFlags.None); //No scale this time
@@ -3692,7 +3982,13 @@ namespace Deconvolvulator
             int nYMid = psf.Height / 2;
             int nXMid = psf.Width / 2;
             int nCropDistance = nPxWidth/2;
-            float fMax = psf.At<float>(nYMid, nXMid);
+
+            double dMax = 0.0d;
+            double dMin = 0.0d;
+            Cv2.MinMaxIdx(psf, out dMin, out dMax);
+            float fRange = (float)(dMax - dMin);
+            psf = (psf - dMin) / fRange ;
+            float fMax = 1.0f;
 
             Mat crop = new Mat(nCropDistance *2+1, nCropDistance * 2 + 1, MatType.CV_16UC1);
             for (int nX = - nCropDistance; nX <=  nCropDistance; nX++)
@@ -3851,17 +4147,123 @@ namespace Deconvolvulator
             return dProduct;
         }
 
-        private Mat fftshift(Mat inputImg)
+        private Mat CalcFTByDivision(Mat output, Mat input)
         {
-            //Rearrange the quadrants of Fourier image so that the origin is at the image center
+            //With a (blurred) input image, and a repaired output image, 
+            // calculate what Fourier Transform would have generated the repair, 
+            // ie returnFT = FT(output) / FT(input)
+            //Actually return the ABS of returnFT so that it can be plotted
+            int nChannels = input.Channels();
+            if (nChannels > 1)
+            {
+                Mat[] mCh = new Mat[nChannels];
+                mCh = Cv2.Split(input);
+                input = mCh[1].Clone(); //Use green channel
+                mCh = Cv2.Split(output);
+                output = mCh[1].Clone();
+                mCh[0].Dispose();
+                mCh[1].Dispose();
+                mCh[2].Dispose();
+            }
+
+            //returnFT = FT(output) / FT(input) 
+            //Dividing by the complex array FT(input) can be achieved as follows:
+            //returnFT = FT(output) x FT*(input) / ABS(FT(input))^2, where FT* means the complex conjugate
+            //  and then take the ABS(returnFT)
+
+            //1) FT(output) 
+            Mat FTReal = new Mat(); //Disposed
+            Mat FTImag = new Mat(); //Disposed
+            Mat FTOutput = new Mat(); //Disposed
+            FTOutput = DFT(output, null, ref FTReal, ref FTImag, DftFlags.None);
+
+            //2) FT(input) and ABS(FT(input))^2
+            Mat FTInput = new Mat(); //Disposed
+            FTInput = DFT(input, null, ref FTReal, ref FTImag, DftFlags.None);
+            Mat Abs2 = FTReal.Mul(FTReal) + FTImag.Mul(FTImag);
+
+            //3) Multiply complex FTOutput with conjugate of FTInput
+            Mat product = FTOutput.EmptyClone();
+            Cv2.MulSpectrums(FTOutput, FTInput, product, DftFlags.None, true); //Conjugate FT*(Input) when multiplying
+
+            //4) ABS of product
+            Mat[] planes = Cv2.Split(product); //Get the real and imaginary parts
+            Mat returnFT_Real = planes[0] / Abs2;
+            Mat returnFT_Imag = planes[1] / Abs2;
+            //In case of divide by zero
+            Cv2.PatchNaNs(returnFT_Real);
+            Cv2.PatchNaNs(returnFT_Imag);
+            Mat returnFT = returnFT_Real.Mul(returnFT_Real) + returnFT_Imag.Mul(returnFT_Imag);
+            Cv2.Pow(returnFT, 0.5d, returnFT);
+
+            returnFT_Real.Dispose();
+            returnFT_Imag.Dispose();
+            FTReal.Dispose();
+            FTImag.Dispose();
+            FTOutput.Dispose();
+            FTInput.Dispose();
+            product.Dispose();
+            Abs2.Dispose();
+            planes[0].Dispose();
+            planes[1].Dispose();
+            if (nChannels > 1)
+            {
+                input.Dispose();
+                output.Dispose();
+            }
+
+            return returnFT;
+        }
+
+        private Mat PsfFromFT(Mat realFT, Mat imagFT)
+        {
+            //Calculate the PSF that would have been used to convolve, ie InverseFT(1/(realFT + i x imagFT))
+            //1/z = (Conjugate z) / Abs(z)^2
+            if (imagFT == null)
+                imagFT = new Mat(realFT.Height, realFT.Width, realFT.Type(), new Scalar(0));
+            Mat Abs2 = realFT.Mul(realFT) + imagFT.Mul(imagFT);
+            Mat[] Planes = new Mat[2];
+            Planes[0] = realFT / Abs2;
+            Planes[1] = -imagFT / Abs2;
+
+            //In case of divide by zero
+            Cv2.PatchNaNs(Planes[0]);
+            Cv2.PatchNaNs(Planes[1]);
+
+            Mat reciprocalFT = new Mat(realFT.Height, realFT.Width, MatType.CV_32FC2, new Scalar(0.0));
+            Cv2.Merge(Planes, reciprocalFT);
+
+            Mat inversed = reciprocalFT.EmptyClone();
+            Cv2.Idft(reciprocalFT, inversed, DftFlags.None);
+            Planes = Cv2.Split(inversed);
+
+            //Return the real component of the PSF only
+            Mat returnMat = Planes[0];
+            returnMat = rearrangeQuadrants(returnMat);
+
+            reciprocalFT.Dispose();
+            inversed.Dispose();
+            Planes[0].Dispose();
+            Planes[1].Dispose();
+
+            double dMax = 0.0f;
+            double dMin = 0.0f;
+            Cv2.MinMaxLoc(returnMat, out dMin, out dMax);
+
+            return returnMat / dMax;
+        }
+
+        private Mat rearrangeQuadrants(Mat inputImg)
+        {
+            //Rearrange the quadrants of  image so that the origin is at the image center
             // note that inputImg will already have an even number of rows and columns
             Mat outputImg = inputImg.Clone(); //Returned
-            int cx = outputImg.Cols / 2;
-            int cy = outputImg.Rows / 2;
-            Mat q0 = new Mat(outputImg, new Rect(0, 0, cx, cy)); // Top-Left - Create a ROI per quadrant
-            Mat q1 = new Mat(outputImg, new Rect(cx, 0, cx, cy)); // Top-Right
-            Mat q2 = new Mat(outputImg, new Rect(0, cy, cx, cy)); // Bottom-Left
-            Mat q3 = new Mat(outputImg, new Rect(cx, cy, cx, cy)); // Bottom-Right
+            int nHalfWidth = outputImg.Cols / 2;
+            int nHalfHeight = outputImg.Rows / 2;
+            Mat q0 = new Mat(outputImg, new Rect(0, 0, nHalfWidth, nHalfHeight)); // Top-Left - Create a ROI per quadrant
+            Mat q1 = new Mat(outputImg, new Rect(nHalfWidth, 0, nHalfWidth, nHalfHeight)); // Top-Right
+            Mat q2 = new Mat(outputImg, new Rect(0, nHalfHeight, nHalfWidth, nHalfHeight)); // Bottom-Left
+            Mat q3 = new Mat(outputImg, new Rect(nHalfWidth, nHalfHeight, nHalfWidth, nHalfHeight)); // Bottom-Right
 
             Mat tmp = inputImg.EmptyClone(); //Disposed
             q0.CopyTo(tmp); // swap quadrant (Top-Right with Bottom-Left)
@@ -3872,6 +4274,11 @@ namespace Deconvolvulator
             tmp.CopyTo(q2);
 
             tmp.Dispose();
+            q0.Dispose();
+            q1.Dispose();
+            q2.Dispose();
+            q3.Dispose();
+
             return outputImg;
         }
 
@@ -4136,8 +4543,9 @@ namespace Deconvolvulator
                 pic.Image = null;
                 return;
             }
-            //Mat must be CV_8U for BitmapConverter.ToBitmap
-            if (mat.Depth() == 2)
+
+            //Mat must be CV_8U for BitmapConverter.ToBitmap, Depth 0 and 1 are 8 bit size
+            if (mat.Depth() >= 2)
                 mat = mat / 256;
 
             Mat matBmp = new Mat(mat.Height, mat.Width, MatType.CV_8U);
@@ -4364,8 +4772,24 @@ namespace Deconvolvulator
             int nPSFWidth = psf.Width;
             int nPSFHeight = psf.Height;
             int picWidth = picPSFProfile.Width;
-            int picHeight = picPSFProfile.Height - 2;
-            float fMax = psf.At<float>(nPSFHeight / 2, nPSFWidth / 2);
+
+            if (chkInvPSF.Checked)
+                fFWHM = 0.0f;
+
+            double dMax = 0.0d;
+            double dMin = 0.0d;
+            Point lMax = new Point();
+            Point lMin = new Point();
+            Cv2.MinMaxLoc(psf, out dMin, out dMax);
+            Cv2.MinMaxLoc(psf, out lMin, out lMax);
+            float fMax = (float)dMax;
+
+            int nXAxisHeight = 2;
+            //PSF can go negative
+            if (dMin < 0.0d)
+                nXAxisHeight = (int)(picPSFProfile.Height * -dMin / (dMax - dMin)) + 2;
+            int picHeight = picPSFProfile.Height - nXAxisHeight;
+
             System.Drawing.PointF[] pts = new System.Drawing.PointF[nWidth];
             for (int nX = -nWidth/2; nX < nWidth/2; nX++)
             {
@@ -4373,20 +4797,42 @@ namespace Deconvolvulator
                     continue;
 
                 pts[nX + nWidth/2] = new System.Drawing.PointF((float)(nX + nWidth/2) / nWidth * picWidth,
-                    picHeight - psf.At<float>(nPSFHeight / 2, nX + nPSFWidth/2) / fMax * picHeight);
+                    picHeight - psf.At<float>(lMax.Y, nX + lMax.X) / fMax * picHeight);
             }
             g.DrawCurve(System.Drawing.Pens.Black, pts);
             //Base line
-            g.DrawLine(System.Drawing.Pens.DarkGray, 0.0f, picPSFProfile.Height - 2, picPSFProfile.Width, picPSFProfile.Height - 2);
+            g.DrawLine(System.Drawing.Pens.DarkGray, 0.0f, picPSFProfile.Height - nXAxisHeight, picPSFProfile.Width, picPSFProfile.Height - nXAxisHeight);
             //Draw FWHM line
-            g.DrawLine(System.Drawing.Pens.Black, picWidth / 2.0f - fFWHM / nWidth * picWidth / 2.0f, picHeight / 2.0f,
-                picWidth / 2.0f + fFWHM / nWidth * picWidth / 2.0f, picHeight / 2.0f);
+            if (fFWHM != 0.0f)
+                g.DrawLine(System.Drawing.Pens.Black, picWidth / 2.0f - fFWHM / nWidth * picWidth / 2.0f, picHeight / 2.0f,
+                    picWidth / 2.0f + fFWHM / nWidth * picWidth / 2.0f, picHeight / 2.0f);
         }
 
-        private void mDisplayFFTInPic(int nHeight, int nWidth, Mat mat, PictureBox pic, bool bConvertTo16U)
+        private void mDisplayFFTInPic(Mat mat, PictureBox pic, bool bConvertTo16U, double dMin, double dMax)
         {
-            Mat mDisplay = mDisplayFFT(nHeight, nWidth, mat, bConvertTo16U);
+            if (mat == null)
+            {
+                pic.Image = null;
+                return;
+            }
+            int nHeight = mat.Height;
+            int nWidth = mat.Width;
+            Mat mDisplay = mDisplayFFT(nHeight, nWidth, mat, bConvertTo16U, dMin, dMax);
             MatToPictureBox(mDisplay, pic, false, new System.Drawing.Point());
+        }
+
+        private void udMaxPlotFT_ValueChanged(object sender, EventArgs e)
+        {
+            if (optFilterFourierTransform.Checked)
+            {
+                Mat mCurrentFTDisplayed = null;
+                if (cboCurrent.SelectedItem.ToString() == "REPAIRED")
+                    mCurrentFTDisplayed = mFTDisplayREPAIRED;
+                else
+                    mCurrentFTDisplayed = mFTDisplayHistory[cboCurrent.SelectedIndex];
+
+                mDisplayFFTInPic(mCurrentFTDisplayed, picFilterFT, true, 0.0d, (double)udMaxPlotFT.Value);
+            }
         }
 
         private Mat mLogFFT(Mat real, Mat imag)
@@ -4401,15 +4847,19 @@ namespace Deconvolvulator
             // Transform the output image with float values into a range of 0 to 1
             Cv2.Normalize(displayFT, displayFT, 0, 1.0f, NormTypes.MinMax, real.Type());
 
-            displayFT = fftshift(displayFT);
+            displayFT = rearrangeQuadrants(displayFT);
             return displayFT;
         }
 
-        private Mat mDisplayFFT(int nHeight, int nWidth, Mat mat, bool bConvertTo16U)
+        private Mat mDisplayFFT(int nHeight, int nWidth, Mat mat, bool bConvertTo16U, double dMin, double dMax)
         {
-            double dMax = 0.0d;
-            double dMin = 0.0d;
-            mat.MinMaxIdx(out dMin, out dMax);
+            Point lMin = new Point();
+            Point lMax = new Point();
+            //Use min and max supplied
+            if (dMin == 0.0d && dMax == 0.0d)
+                mat.MinMaxIdx(out dMin, out dMax);
+            //mat.MinMaxLoc(out lMin, out lMax);
+
             Mat FilterDiplay = mat.Clone();
             if (bConvertTo16U)
             {
@@ -4420,7 +4870,7 @@ namespace Deconvolvulator
             {
                 FilterDiplay = (FilterDiplay - dMin) / (dMax - dMin);
             }
-            FilterDiplay = fftshift(FilterDiplay);
+            FilterDiplay = rearrangeQuadrants(FilterDiplay);
             return FilterDiplay;
         }
 
@@ -5901,8 +6351,8 @@ namespace Deconvolvulator
 
         private void btnCopyPSF_Click(object sender, EventArgs e)
         {
-            txtPSFDump.SelectAll();
-            txtPSFDump.Copy();
+            txtDebug.SelectAll();
+            txtDebug.Copy();
         }
 
         private void btnSave_Click(object sender, EventArgs e)
@@ -5911,6 +6361,8 @@ namespace Deconvolvulator
             string sImageIn = txtImage.Text;
             if (sImageIn.StartsWith(@"\"))
                 sImageIn = Environment.CurrentDirectory + sImageIn;
+            else if ( sImageIn.IndexOf(@"\") == -1)
+                sImageIn = Environment.CurrentDirectory + @"\" + sImageIn;
 
             string sExistingFileName = Path.GetFileNameWithoutExtension(sImageIn);
             string sOutputDir = Path.GetDirectoryName(sImageIn);
@@ -5971,8 +6423,7 @@ namespace Deconvolvulator
             for (int i = 0; i < mLAYERS.Length; i++)
             {
                 mLayerAddHalf = mLAYERS[i].Clone();
-                //Power 3.0 rather than 2.0 in CombineLayers() for better display
-                fLayerPowerScale = (float)Math.Pow(3.0d, 2 - i) * (float)udLayersScale.Value;
+                fLayerPowerScale = (float)udLayersScale.Value;
                 if (mnChannels == 1)
                     mLayerAddHalf = mLayerAddHalf * fLayerPowerScale + 0.5f;
                 else
@@ -6068,20 +6519,29 @@ namespace Deconvolvulator
                 return;
             Mat mCurrent = null;
             Mat mCurrentPSF = null;
+            Mat mCurrentFTDisplayed = null;
             string sDescription = "";
             float fPSFHistoryFWHM = 0.0f;
             if (cboCurrent.SelectedItem.ToString() == "REPAIRED")
             {
                 mCurrent = mREPAIRED;
                 sDescription = msRepairedDesription;
-                mCurrentPSF = mPsfREPAIRED;
+                if (chkInvPSF.Checked)
+                    mCurrentPSF = mPsfInvREPAIRED;
+                else
+                    mCurrentPSF = mPsfREPAIRED;
+                mCurrentFTDisplayed = mFTDisplayREPAIRED;
                 fPSFHistoryFWHM = mFWHMREPAIRED;
             }
             else
             {
                 mCurrent = mHistory[cboCurrent.SelectedIndex];
                 sDescription = cboCurrent.Items[cboCurrent.SelectedIndex].ToString();
-                mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+                if (chkInvPSF.Checked)
+                    mCurrentPSF = mPSFInvHistory[cboCurrent.SelectedIndex];
+                else
+                    mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+                mCurrentFTDisplayed = mFTDisplayHistory[cboCurrent.SelectedIndex];
                 fPSFHistoryFWHM = mPSFHistoryFWHM[cboCurrent.SelectedIndex];
                 mHistoryCurrent = cboCurrent.SelectedIndex;
             }
@@ -6089,8 +6549,16 @@ namespace Deconvolvulator
             if (sDescription.ToLower().IndexOf("motion") == -1 && sDescription.ToLower().IndexOf("rotation") == -1)
             {
                 PlotPSFProfile(mCurrentPSF, picPSFProfile, (int)udPSFPlotWidth.Value, fPSFHistoryFWHM);
-                PlotMTF(mCurrentPSF, fPSFHistoryFWHM);
+                PlotMTF(mPSFHistory[cboCurrent.SelectedIndex], fPSFHistoryFWHM);
             }
+            else
+            {
+                picPSFProfile.Image = null;
+            }
+
+            if (optFilterFourierTransform.Checked)
+                mDisplayFFTInPic(mCurrentFTDisplayed, picFilterFT, true, 0.0d, (double)udMaxPlotFT.Value);
+
 
             MatToPictureBox_Zoomed(mCurrent, picOut, sDescription, true, false, false);
             Mat psfCropped = PSFCroppedForDisplay(mCurrentPSF, (int)(udPSFPlotWidth.Value), 65000.0f);
@@ -6135,20 +6603,33 @@ namespace Deconvolvulator
                     mnROIStartX =  e.X;
                     mnROIStartY =  e.Y;
                 }
-                else if (chkClickCompareTo.Checked)
+                else if (chkClickCompareTo.Checked && msRepairedDesription != "Sharpening layers x 6")
                 {
                     //Swap displayed image
                     Mat mLast = mHistory[cboHistory.SelectedIndex];
                     string sDescription = cboHistory.Items[cboHistory.SelectedIndex].ToString();
                     MatToPictureBox_Zoomed(mLast, picOut, sDescription, true, false, false);
 
+                    Mat mCurrentPSF = new Mat();
+                    if (chkInvPSF.Checked)
+                        mCurrentPSF = mPSFInvHistory[cboHistory.SelectedIndex];
+                    else
+                        mCurrentPSF = mPSFHistory[cboHistory.SelectedIndex];
+
                     if (sDescription.ToLower().IndexOf("motion") == -1 && sDescription.ToLower().IndexOf("rotation") == -1)
                     {
-                        PlotPSFProfile(mPSFHistory[cboHistory.SelectedIndex], picPSFProfile, (int)udPSFPlotWidth.Value, mPSFHistoryFWHM[cboHistory.SelectedIndex]);
+                        PlotPSFProfile(mCurrentPSF, picPSFProfile, (int)udPSFPlotWidth.Value, 0.0f);
                         PlotMTF(mPSFHistory[cboHistory.SelectedIndex], mPSFHistoryFWHM[cboHistory.SelectedIndex]);
                     }
+                    else
+                    {
+                        picPSFProfile.Image = null;
+                    }
 
-                    Mat psfCropped = PSFCroppedForDisplay(mPSFHistory[cboHistory.SelectedIndex], (int)(udPSFPlotWidth.Value), 65000.0f);
+                    if (optFilterFourierTransform.Checked)
+                        mDisplayFFTInPic( mFTDisplayHistory[cboHistory.SelectedIndex], picFilterFT, true, 0.0d, (double)udMaxPlotFT.Value);
+
+                    Mat psfCropped = PSFCroppedForDisplay(mCurrentPSF, (int)(udPSFPlotWidth.Value), 65000.0f);
                     MatToPictureBox(psfCropped, picPSF, false, new System.Drawing.Point());
                 }
             }
@@ -6247,6 +6728,7 @@ namespace Deconvolvulator
 
             Mat mCurrent = null;
             Mat mCurrentPSF = null;
+            Mat mCurrentFTDisplayed = null;
             string sDescription = "";
 
             if (mbROISetPending)
@@ -6301,13 +6783,21 @@ namespace Deconvolvulator
                     {
                         mCurrent = mREPAIRED;
                         sDescription = msRepairedDesription;
-                        mCurrentPSF = mPsfREPAIRED;
+                        if (chkInvPSF.Checked)
+                            mCurrentPSF = mPsfInvREPAIRED;
+                        else
+                            mCurrentPSF = mPsfREPAIRED;
+                        mCurrentFTDisplayed = mFTDisplayREPAIRED;
                     }
                     else
                     {
                         mCurrent = mHistory[cboCurrent.SelectedIndex];
                         sDescription = cboCurrent.Items[cboCurrent.SelectedIndex].ToString();
-                        mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+                        if (chkInvPSF.Checked)
+                            mCurrentPSF = mPSFInvHistory[cboCurrent.SelectedIndex];
+                        else
+                            mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+                        mCurrentFTDisplayed = mFTDisplayHistory[cboCurrent.SelectedIndex];
                     }
                 }
                 else
@@ -6318,6 +6808,22 @@ namespace Deconvolvulator
                     {
                         sDescription = msRepairedDesription;
                         mCurrent = mREPAIRED;
+                        if (cboCurrent.SelectedItem.ToString() == "REPAIRED")
+                        {
+                            mCurrentFTDisplayed = mFTDisplayREPAIRED;
+                            if (chkInvPSF.Checked)
+                                mCurrentPSF = mPsfInvREPAIRED;
+                            else
+                                mCurrentPSF = mPsfREPAIRED;
+                        }
+                        else
+                        {
+                            mCurrentFTDisplayed = mFTDisplayHistory[cboCurrent.SelectedIndex];
+                            if (chkInvPSF.Checked)
+                                mCurrentPSF = mPSFInvHistory[cboCurrent.SelectedIndex];
+                            else
+                                mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+                        }
                     }
                     else
                     {
@@ -6325,14 +6831,22 @@ namespace Deconvolvulator
                         {
                             mCurrent = mREPAIRED;
                             sDescription = msRepairedDesription;
-                            mCurrentPSF = mPsfREPAIRED;
+                            if (chkInvPSF.Checked)
+                                mCurrentPSF = mPsfInvREPAIRED;
+                            else
+                                mCurrentPSF = mPsfREPAIRED;
+                            mCurrentFTDisplayed = mFTDisplayREPAIRED;
                             fPSFHistoryFWHM = mFWHMREPAIRED;
                         }
                         else
                         {
                             mCurrent = mHistory[cboCurrent.SelectedIndex];
                             sDescription = cboCurrent.Items[cboCurrent.SelectedIndex].ToString();
-                            mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+                            if (chkInvPSF.Checked)
+                                mCurrentPSF = mPSFInvHistory[cboCurrent.SelectedIndex];
+                            else
+                                mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+                            mCurrentFTDisplayed = mFTDisplayHistory[cboCurrent.SelectedIndex];
                             fPSFHistoryFWHM = mPSFHistoryFWHM[cboCurrent.SelectedIndex];
                         }
                     }
@@ -6341,8 +6855,15 @@ namespace Deconvolvulator
                     if (sDescription.ToLower().IndexOf("motion") == -1 && sDescription.ToLower().IndexOf("rotation") == -1)
                     {
                         PlotPSFProfile(mCurrentPSF, picPSFProfile, (int)udPSFPlotWidth.Value, fPSFHistoryFWHM);
-                        PlotMTF(mCurrentPSF, fPSFHistoryFWHM);
+                        PlotMTF(mPSFHistory[cboCurrent.SelectedIndex], fPSFHistoryFWHM);
                     }
+                    else
+                    {
+                        picPSFProfile.Image = null;
+                    }
+
+                    if (optFilterFourierTransform.Checked)
+                        mDisplayFFTInPic( mCurrentFTDisplayed, picFilterFT, true, 0.0d, (double)udMaxPlotFT.Value);
 
                     Mat psfCropped = PSFCroppedForDisplay(mCurrentPSF, (int)(udPSFPlotWidth.Value), 65000.0f);
                     MatToPictureBox(psfCropped, picPSF, false, new System.Drawing.Point(0, 0));
@@ -6415,41 +6936,41 @@ namespace Deconvolvulator
         {
             if (optCircularBlur.Checked)
             {
-                grpPSF.Enabled = true;
+                grpPSF.Visible = true;
                 grpPSF.BackColor = System.Drawing.SystemColors.ControlLight;
-                grpMotionBlurDetails.Enabled = false;
+                grpMotionBlurDetails.Visible = false;
                 grpMotionBlurDetails.BackColor = System.Drawing.SystemColors.Control;
-                grpLayers.Enabled = false;
+                grpLayers.Visible = false;
                 grpLayers.BackColor = System.Drawing.SystemColors.Control;
-                if (!grpMethod.Enabled)
+                if (!grpMethod.Visible)
                 {
-                    grpMethod.Enabled = true;
+                    grpMethod.Visible = true;
                     grpMethod.BackColor = System.Drawing.Color.FromArgb(192, 255, 192);
                 }
             }
             else if (optMotionBlur.Checked)
             {
-                grpMotionBlurDetails.Enabled = true;
+                grpMotionBlurDetails.Visible = true;
                 grpMotionBlurDetails.BackColor = System.Drawing.SystemColors.ControlLight;
-                grpPSF.Enabled = false;
+                grpPSF.Visible = false;
                 grpPSF.BackColor = System.Drawing.SystemColors.Control;
-                grpLayers.Enabled = false;
+                grpLayers.Visible = false;
                 grpLayers.BackColor = System.Drawing.SystemColors.Control;
-                if (!grpMethod.Enabled)
+                if (!grpMethod.Visible)
                 {
-                    grpMethod.Enabled = true;
+                    grpMethod.Visible = true;
                     grpMethod.BackColor = System.Drawing.Color.FromArgb(192, 255, 192);
                 }
             }
             else if (optSharpeningLayers.Checked)
             {
-                grpLayers.Enabled = true;
+                grpLayers.Visible = true;
                 grpLayers.BackColor = System.Drawing.SystemColors.ControlLight;
-                grpPSF.Enabled = false;
+                grpPSF.Visible = false;
                 grpPSF.BackColor = System.Drawing.SystemColors.Control;
-                grpMotionBlurDetails.Enabled = false;
+                grpMotionBlurDetails.Visible = false;
                 grpMotionBlurDetails.BackColor = System.Drawing.SystemColors.Control;
-                grpMethod.Enabled = false;
+                grpMethod.Visible = false;
                 grpMethod.BackColor = System.Drawing.SystemColors.Control;
             }
         }
@@ -6462,7 +6983,8 @@ namespace Deconvolvulator
         private void optCircularBlur_CheckedChanged(object sender, EventArgs e)
         {
             mSetBackColorsForOptions();
-            UIChangedDoAutoDeblur();
+            if (optCircularBlur.Checked)
+                UIChangedDoAutoDeblur();
         }
 
         private void optMotionBlur_CheckedChanged(object sender, EventArgs e)
@@ -6493,7 +7015,8 @@ namespace Deconvolvulator
                 }
                 mbLayersCalc = false;
                 GC.Collect();
-                cboCurrent_SelectedIndexChanged(null, null);
+                if (!chkAutoDeblur.Checked)
+                    cboCurrent_SelectedIndexChanged(null, null);
             }
             else
             {
@@ -6504,6 +7027,45 @@ namespace Deconvolvulator
             }
 
             this.Cursor = Cursors.Default;
+        }
+
+        private void chkInvPSF_CheckedChanged(object sender, EventArgs e)
+        {
+            Mat mCurrentPSF = new Mat();
+            float fPSFHistoryFWHM = 0.0f;
+
+            if (optMotionBlur.Checked)
+            {
+                picPSFProfile.Image = null;
+                return;
+            }
+
+            if (cboCurrent.SelectedItem.ToString() == "REPAIRED")
+            {
+                if (chkInvPSF.Checked)
+                    mCurrentPSF = mPsfInvREPAIRED;
+                else
+                    mCurrentPSF = mPsfREPAIRED;
+                fPSFHistoryFWHM = mFWHMREPAIRED;
+            }
+            else
+            {
+                if (chkInvPSF.Checked)
+                    mCurrentPSF = mPSFInvHistory[cboCurrent.SelectedIndex];
+                else
+                    mCurrentPSF = mPSFHistory[cboCurrent.SelectedIndex];
+                fPSFHistoryFWHM = mPSFHistoryFWHM[cboCurrent.SelectedIndex];
+            }
+
+            if (chkInvPSF.Checked) //FWHM not calculated for inverse PSF
+                fPSFHistoryFWHM = 0.0f;
+
+            //Plot profile
+            PlotPSFProfile(mCurrentPSF, picPSFProfile, (int)udPSFPlotWidth.Value, fPSFHistoryFWHM);
+            //Display Cropped 2D PSF in PictureBox
+            Mat psfCropped = PSFCroppedForDisplay(mCurrentPSF, (int)(udPSFPlotWidth.Value), 65000.0f);
+            MatToPictureBox(psfCropped, picPSF, false, new System.Drawing.Point(0, 0));
+            psfCropped.Dispose();
         }
 
         private void btnClearPSFPlot_Click(object sender, EventArgs e)
@@ -6640,8 +7202,10 @@ namespace Deconvolvulator
                 if (mREPAIRED == null)
                     return;
                 mHistory[mHistoryCurrent + 1] = mREPAIRED.Clone();
+                mPSFHistory[mHistoryCurrent + 1] = mPsfREPAIRED.Clone();
+                mPSFInvHistory[mHistoryCurrent + 1] = mPsfInvREPAIRED.Clone();
+                mFTDisplayHistory[mHistoryCurrent + 1] = mFTDisplayREPAIRED.Clone();
                 mHistoryCurrent++;
- 
             }
             else
             {
@@ -6651,6 +7215,8 @@ namespace Deconvolvulator
                 //msRepairedDesription is already set in btnDeblur_Click
                 mHistory[mHistoryCurrent + 1] = mREPAIRED.Clone();
                 mPSFHistory[mHistoryCurrent + 1] = mPsfREPAIRED.Clone();
+                mPSFInvHistory[mHistoryCurrent + 1] = mPsfInvREPAIRED.Clone();
+                mFTDisplayHistory[mHistoryCurrent + 1] = mFTDisplayREPAIRED.Clone();
                 mPSFHistoryFWHM[mHistoryCurrent + 1] = mFWHMREPAIRED;
                 mHistoryCurrent++;
             }
@@ -6963,16 +7529,6 @@ namespace Deconvolvulator
             else
                 img = mHistory[mHistoryCurrent];
 
-            //Laplacian PSF
-            /*
-            img = new Mat(mnHeight, mnWidth, MatType.CV_32FC1, new Scalar(0));
-            img.Set<float>(mnHeight / 2, mnWidth / 2, 4);
-            img.Set<float>(mnHeight / 2 - 1, mnWidth / 2, -1);
-            img.Set<float>(mnHeight / 2 + 1, mnWidth / 2, -1);
-            img.Set<float>(mnHeight / 2 , mnWidth / 2 - 1, -1);
-            img.Set<float>(mnHeight / 2 , mnWidth / 2 + 1, -1);
-            */
-
             if (img == null)
             {
                 this.Cursor = Cursors.Default;
@@ -6992,6 +7548,22 @@ namespace Deconvolvulator
             Mat FTReal = new Mat(); //Disposed
             Mat FTImag = new Mat(); //Disposed
             DFT(img, null, ref FTReal, ref FTImag, DftFlags.None);
+
+            if (mbDebug)
+            {
+                StringBuilder sbDebug = new StringBuilder();
+                Mat Mag = FTReal.EmptyClone();
+                Cv2.Magnitude(FTReal, FTImag, Mag);
+                for (int x = 0; x <= mnWidth/2; x++)
+                {
+                    sbDebug.Append(x.ToString() + "\t" + FTReal.At<float>(0,x).ToString() 
+                        + "\t" + FTImag.At<float>(0, x).ToString() + "\t" +
+                        Mag.At<float>(0, x).ToString() + "\r\n");
+                }
+                txtDebug.Text = sbDebug.ToString();
+                Mag.Dispose();
+            }
+
             mREPAIRED = mLogFFT(FTReal, FTImag);
 
             if (nChannels > 1)
@@ -7078,121 +7650,14 @@ namespace Deconvolvulator
         //A normalization of 1/SQRT(No of elements) for both the DFT and IDFT, for instance, makes the transforms unitary
         //But 1/N for DFT and 1 for 1DFT would also be unitary
 
-        //Temp extra stuff
+        //Temp extra functions
         //Extra for animated gif load
         System.Drawing.Image mgifImg = null;
         System.Drawing.Imaging.FrameDimension mdimension = null;
         System.Drawing.Image[] mFrames = null;
         private void btnFFTW_Click(object sender, EventArgs e)
         {
-            string sGif = @"F:\temp\Moon\Moon_190210_pipp.gif.c66e3899cb82791d1d82a895ea87cccc.gif";
-            mgifImg = System.Drawing.Image.FromFile(sGif);
-            mdimension = new System.Drawing.Imaging.FrameDimension(mgifImg.FrameDimensionsList[0]);
-            // Number of frames
-            int frameCount = mgifImg.GetFrameCount(mdimension);
-            mFrames = new System.Drawing.Image[frameCount];
-            trkGif.Minimum = 0;
-            trkGif.Maximum = frameCount - 1;
-
-            int nXStart = 323;
-            int nXWidth = 18;
-            int nYStart = 118;
-            int nYHeight = 27;
-            int nBackground = 20;
-            double dSum = 0.0d;
-            double dPtCnt = nXWidth * nYHeight;
-            double dMomentX = 0.0d;
-            double dMomentY = 0.0d;
-            double dVal = 0.0d;
-            double[] dXCentre = new double[frameCount];
-            double[] dYCentre = new double[frameCount];
-            StringBuilder sbOut = new StringBuilder();
-
-            for (int i = 0; i < frameCount; i++)
-            {
-                mgifImg.SelectActiveFrame(mdimension, i);
-                System.Drawing.Bitmap imgF = new System.Drawing.Bitmap(mgifImg);
-                double dMax = 0.0d;
-                int nXMax = 0;
-                int nYMax = 0;
-                dMomentX = 0.0d;
-                dMomentY = 0.0d;
-                dSum = 0.0d;
-                for (int x = nXStart; x < nXStart + nXWidth; x++)
-                {
-                    for (int y = nYStart; y < nYStart + nYHeight; y++)
-                    {
-                        dVal = imgF.GetPixel(x, y).R - nBackground;
-                        if (dVal > dMax)
-                        {
-                            dMax = dVal;
-                            nXMax = x;
-                            nYMax = y;
-                        }
-                    }
-                }
-                //Find exact max using surrounding pixels
-                int nSurroundingExtend = 2;
-                for (int x = nXMax - nSurroundingExtend; x <= nXMax + nSurroundingExtend; x++)
-                {
-                    for (int y = nYMax - nSurroundingExtend; y <= nYMax + nSurroundingExtend; y++)
-                    {
-                        dVal = imgF.GetPixel(x, y).R - nBackground;
-                        dSum = dSum + dVal;
-                        dMomentX = dMomentX + dVal * (x - (nXMax - nSurroundingExtend));
-                        dMomentY = dMomentY + dVal * (y - (nYMax - nSurroundingExtend));
-                    }
-                }
-                dXCentre[i] = dMomentX / dSum + (nXMax - nSurroundingExtend);
-                dYCentre[i] = dMomentY / dSum + (nYMax - nSurroundingExtend);
-            }
-
-            double dOverallSumX = 0.0d;
-            double dOverallSumY = 0.0d;
-            double dOverallCentreX = 0.0d;
-            double dOverallCentreY = 0.0d;
-            for (int i = 0; i < frameCount; i++)
-            {
-                dOverallSumX = dOverallSumX + dXCentre[i];
-                dOverallSumY = dOverallSumY + dYCentre[i];
-            }
-            dOverallCentreX = dOverallSumX / frameCount;
-            dOverallCentreY = dOverallSumY / frameCount;
-
-            double dRadialDist = 0.0d;
-            double[] dDistance = new double[frameCount];
-            for (int i = 0; i < frameCount; i++)
-            {
-                dRadialDist = Math.Sqrt((dXCentre[i] - dOverallCentreX) * (dXCentre[i] - dOverallCentreX));
-                dDistance[i] = dRadialDist;
-            }
-
-            Array.Sort(dDistance);
-            dSum = 0.0d;
-            for (int i = 0; i < frameCount; i = i + 1)
-            {
-                dSum = dSum + dDistance[i];
-                if (i % 10 == 0 && i > 0)
-                {
-                    sbOut.Append((dSum / 10.0d).ToString() + "\t" + ((frameCount - i) / 10).ToString() + "\r\n");
-                    dSum = 0.0d;
-                }
-            }
-
-            //Frame jitter for moon gifs is not Gaussian, looks more linear
-
-            txtPSFDump.Text = sbOut.ToString();
-
-            /*
-            for (int i = 0; i < frameCount; i++)
-            {
-                mgifImg.SelectActiveFrame(mdimension, i);
-                System.Drawing.Image imgF = new System.Drawing.Bitmap(mgifImg);
-                imgF.Save(@"F:\temp\Moon\Frames\" + i.ToString() + ".png", System.Drawing.Imaging.ImageFormat.Png);
-            }
-            */
-
-            
+            //See CNotUsed.cs
         }
 
         private void trkGif_Scroll(object sender, EventArgs e)
@@ -7203,102 +7668,7 @@ namespace Deconvolvulator
 
         private void btnLimb_Click(object sender, EventArgs e)
         {
-            Mat mDisplayed = new Mat();
-            if (cboCurrent.SelectedItem.ToString() == "REPAIRED")
-                mDisplayed = mREPAIRED;
-            else
-                mDisplayed = mHistory[cboCurrent.SelectedIndex];
-            StringBuilder sbOut1 = new StringBuilder();
-            float fMax1 = mDisplayed.At<float>(mDisplayed.Height / 2, mDisplayed.Width / 2);
-            float fSum1 = 0.0f;
-            float fAbsError = 0.0f;
-            for (int y = mDisplayed.Height/2 - 10; y < mDisplayed.Height / 2 + 10; y++)
-            {
-                for (int x = mDisplayed.Width / 2 - 10; x < mDisplayed.Width / 2 + 10; x++)
-                {
-                    fSum1 += mDisplayed.At<float>(y, x);
-                }
-            }
-
-            for (int y = 0; y < mDisplayed.Height; y++)
-            {
-                for (int x = 0; x < mDisplayed.Width; x++)
-                {
-                    if (y == mDisplayed.Height / 2 && x == mDisplayed.Width / 2)
-                        fAbsError += Math.Abs(1.0f - mDisplayed.At<float>(y, x) / fSum1);
-                    else
-                        fAbsError += Math.Abs(mDisplayed.At<float>(y, x) / fSum1);
-
-                    sbOut1.Append((mDisplayed.At<float>(y, x)/ fSum1).ToString() + "\t");
-                }
-                sbOut1.Append("\r\n");
-            }
-            txtPSFDump.Text = sbOut1.ToString();
-            lblPixelPos.Text = fAbsError.ToString();
-            Application.DoEvents();
-            return;
-
-            Mat[,] mask = new Mat[0, 0];
-            int[,] tileCentreX = new int[0, 0];
-            int[,] tileCentreY = new int[0, 0];
-
-            int nOverlap = 0;
-            Mat[,] split = ImageSplit(mHistory[0], 5, ref mask, ref tileCentreX, ref tileCentreY, ref nOverlap, 2.0f);
-            Mat currentTile = null;
-            Mat psf = null;
-            for (int xTileNo = 0; xTileNo < split.GetLength(0); xTileNo++)
-            {
-                for (int yTileNo = 0; yTileNo < split.GetLength(1); yTileNo++)
-                {
-                    currentTile = split[xTileNo, yTileNo];
-                    //Deblur(currentTile.Width, currentTile.Height, currentTile, psf, "", true, false, 
-                }
-            }
-            Mat combined = ImageCombine(split, mask, nOverlap, mHistory[0].Width, mHistory[0].Height);
-
-            combined = combined * 65536.0f;
-            Mat mSave = new Mat(mnHeight, mnWidth, MatType.CV_16U);
-            combined.ConvertTo(mSave, MatType.CV_16U);
-            Cv2.ImWrite(@"F:\temp\mask\Combined.tif", mSave);
-
-            return;
-            StringBuilder sbOut = new StringBuilder();
-            int nYBandSample = 30;
-            int nYBandStart = 300;
-            for (int x = 0; x < mnWidth; x++)
-            {
-                if (x == 300)
-                    x = 300;
-                float fSum = 0.0f;
-                for (int y = nYBandStart; y < nYBandStart + nYBandSample; y++)
-                {
-                    fSum = fSum + mHistory[0].At<ushort>(y, x) / 65536.0f;
-                }
-                sbOut.Append(x.ToString() + "\t" + (fSum / nYBandSample).ToString() + "\r\n");
-            }
-            txtPSFDump.Text = sbOut.ToString();
-
-            //Make limb darkening
-            float fCentre = 302.0f;
-            float fRadius = 276.0f;
-            float u = 0.8f;
-            float fMax = 0.8f;
-            float fVal = 0.0f;
-            float fOffset = 0.1f;
-            Mat mLimb = mHistory[0].EmptyClone();
-            for (int x = 0; x < mnWidth; x++)
-            {
-                if (x - fCentre <= -fRadius || x - fCentre >= fRadius)
-                    fVal = fOffset;
-                else
-                    fVal = fOffset + fMax * (1.0f - u * (1.0f - (float)Math.Sqrt(fRadius * fRadius - (x - fCentre) * (x - fCentre)) / fRadius));
-                for (int y = 0; y < mnHeight; y++)
-                {
-                    mLimb.Set<ushort>(y, x, (ushort)(65536.0f * fVal));
-                }
-            }
-            mHistory[0] = mLimb.Clone();
-            cboCurrent.SelectedIndex = 0;
+            //See CNotUsed.cs
         }
 
         private void btnRotate_Click(object sender, EventArgs e)
@@ -7325,310 +7695,8 @@ namespace Deconvolvulator
 
         private void btnTest_Click(object sender, EventArgs e)
         {
-            int nWidth = 72;
-            Mat Analyse = new Mat(1, nWidth, MatType.CV_32FC1, new Scalar(0));
-
-            //y = sin(kx)
-            //Period is 2PI / k
-            //k = 2PI / Period
-            //eg Period = 6, k = 1.047197551, freq = 1/6 -> peaks at 12 and 60
-            //eg Period = 2, k = PI, freq = 1/2 -> peak at 36 [Highest frequency possible]
-            //eg Period = 72, k = 2PI/72, freq = 1/72 -> peaks at 1 and 71 [Lowest freq possible]
-            for (int x = 0; x < nWidth; x++)
-            {
-                Analyse.Set<float>(0, x, (float)Math.Sin((float)x* 1.047197551) + (float)Math.Cos((float)x * 3.14159265358)
-                    + (float)Math.Sin((float)x * 2 / 72 * 3.14159265358) );
-            }
-
-            //magnitude image is interesting as this contains all the information we need about the images geometric structure
-            //m_FTReal is all zeroes
-            //m_FTImag is -0.5 at x = 12 and 0.5 at x = 60 (ie 1/6th of width)
-            //Low freqencies at near zero and width
-            //High frequencies are at centre
-
-            Mat m_FTReal = new Mat();
-            Mat m_FTImag = new Mat();
-            Mat m_FT_Analyse = DFT(Analyse, null, ref m_FTReal, ref m_FTImag, DftFlags.Scale);
-            StringBuilder sbOut = new StringBuilder();
-            float fMag = 0.0f;
-            float fMag_Orig = 0.0f;
-            float fPhase = 0.0f;
-            float fDiff = 0.0f;
-
-            for (int x = 0; x < nWidth; x++)
-            {
-                fMag = (float)Math.Sqrt(m_FTReal.At<float>(0, x) * m_FTReal.At<float>(0, x) +
-                    m_FTImag.At<float>(0, x) * m_FTImag.At<float>(0, x));
-                fPhase = (float)Math.Atan2(m_FTImag.At<float>(0, x), m_FTReal.At<float>(0, x));
-                sbOut.Append(x.ToString() + "\t" + fMag + "\t" + fPhase + "\t" + Analyse.At<float>(0, x) + "\r\n");
-            }
-
-            txtPSFDump.Text = sbOut.ToString();
-            return;
-
-
-            //Make test PSFs to deconvolve
-            string sTestPSF = @"F:\temp\PSF.tif";
-            int nTestWidth = 100;
-            int nTestHeight = 100;
-            Mat mPSF = new Mat(nTestHeight, nTestHeight, MatType.CV_32F, new Scalar(0.0f));
-            mPSF.Set<float>(nTestWidth / 2, nTestHeight / 2, 0.9f);
-            mnImageDepth = 65536;
-            if (File.Exists(sTestPSF))
-                File.Delete(sTestPSF);
-
-            SaveImage(mPSF, sTestPSF);
-            txtImage.Text = sTestPSF;
-            ImageLoad();
-
-            return;
-
-            //Display mask for detail enhancement
-            mREPAIRED = mHistory[1].Laplacian(mHistory[1].Depth());
-            float fSigma = (float)udFWHM.Value / 2.35f / 0.707f;
-            Cv2.GaussianBlur(mREPAIRED, mREPAIRED, new OpenCvSharp.Size(0, 0), fSigma);
-            mREPAIRED = Cv2.Abs(mREPAIRED);
-            mREPAIRED = (mREPAIRED - 0.00f) * 30.0f;
-            Cv2.Dilate(mREPAIRED, mREPAIRED, new Mat(3,3,MatType.CV_8U), new Point(-1,-1), 1);
-            Cv2.GaussianBlur(mREPAIRED, mREPAIRED, new OpenCvSharp.Size(0, 0), fSigma);
-            if (cboCurrent.Items[cboCurrent.Items.Count - 1].ToString() != "REPAIRED")
-                cboCurrent.Items.Add("REPAIRED");
-
-            if (cboCurrent.SelectedIndex != cboCurrent.Items.Count - 1)
-            {
-                mbIgnoreCurrentDisplayCboChange = true;
-                cboCurrent.SelectedIndex = cboCurrent.Items.Count - 1;
-                mbIgnoreCurrentDisplayCboChange = false;
-            }
-
-            MatToPictureBox_Zoomed(mREPAIRED, picOut, "", true, false, false);
-            return;
-
-            //Stack frames, no alignment
-            string sDir = @"F:\temp\Jupiter\green\";
-            string sDirOut = @"F:\temp\Jupiter\green\Wiener\";
-            string[] sFrames = Directory.GetFiles(sDir, "*.png");
-            Mat mFrame = new Mat();
-            Mat mStack = new Mat();
-            Mat[] mFrameCols = new Mat[0];
-            mImageTypeLoaded = MatType.CV_16U;
-            mImageTypeInternal = MatType.CV_32F;
-            mbImageInLoaded = true;
-            msImageLoaded = txtImage.Text;
-            mbDeblurDisplayUI = false;
-            for (int i = 0; i < sFrames.Length; i++)
-            {
-                mFrame = Cv2.ImRead(sFrames[i], ImreadModes.Unchanged);
-                mFrameCols = Cv2.Split(mFrame);
-                mFrameCols[1].ConvertTo(mFrameCols[1], MatType.CV_32F);
-                mFrameCols[1] = mFrameCols[1] / 256;
-
-                mnWidth = mFrameCols[1].Cols & -2;
-                mnHeight = mFrameCols[1].Rows & -2;
-                mFrameCols[1] = new Mat(mFrameCols[1], new Rect(0, 0, mnWidth, mnHeight));
-                mnSize = mnWidth * mnHeight;
-
-                mHistory[0] = mFrameCols[1];
-                btnDeblur_Click(null, null);
-
-                SaveImage(mREPAIRED, sDirOut + i.ToString() + ".tif");
-
-                if (i == 0)
-                    mStack = mREPAIRED.EmptyClone();
-                //mStack = mStack + Gamma(mFrameCols[1]) / 100.0f;
-                mStack = mStack + mREPAIRED / 100.0f;
-            }
-            //mImageTypeLoaded = MatType.CV_16U;
-            //mnImageDepth = 65536;
-            //SaveImage(mStack, @"F:\sd\~main\C#\OpenCV\images\Jupiter_Pref_Stack.tif");
-            return;
-
-            //Make a vertical line and convolve with Lorentz PSF
-            Mat mLine = new Mat(300, 300, MatType.CV_32FC1, new Scalar(0.0f));
-            mLine.Line(150, 0, 150, 299, new Scalar(1.0f), 1, LineTypes.Link4);
-            SaveImage(mLine, @"F:\sd\~main\C#\OpenCV\images\line.tif");
-            return;
-
-            //Make 1D PSF motion blur
-            Analyse = calcPSFMotionBlur(nWidth, 1, 22.5d, 0.0d, false, 0.0d);
-            Mat Repaired = new Mat(mREPAIRED, new Rect(0, 632, nWidth, 1));
-            Mat Orig = new Mat(mHistory[0], new Rect(0, 632, nWidth, 1));
-
-            Mat m_FTReal_Orig = new Mat();
-            Mat m_FTImag_Orig = new Mat();
-            Mat m_FT_Orig = DFT(Orig, null, ref m_FTReal_Orig, ref m_FTImag_Orig, DftFlags.Scale);
-
-            Mat m_FTReal_Repaired = new Mat();
-            Mat m_FTImag_Repaired = new Mat();
-            Mat m_FT_Repaired = DFT(Repaired, null, ref m_FTReal_Repaired, ref m_FTImag_Repaired, DftFlags.Scale);
-
-            //Patch low freq using FT of original image
-            /*
-            for (int x = 0; x <= 100; x++)
-            {
-                m_FTReal_Repaired.Set<float>(0, x, m_FTReal_Orig.At<float>(0,x));
-                m_FTImag_Repaired.Set<float>(0, x, m_FTImag_Orig.At<float>(0, x));
-            }
-            */
-
-            //Inverse transform on repaired
-            Mat[] planes_rep = new Mat[2];
-            planes_rep[0] = m_FTReal_Repaired;
-            planes_rep[1] = m_FTImag_Repaired;
-            Cv2.Merge(planes_rep, m_FT_Repaired);
-
-            Mat inversedFT = m_FT_Repaired.EmptyClone();
-            Cv2.Idft(m_FT_Repaired, inversedFT);
-            Cv2.Split(inversedFT, out planes_rep);
-
-            for (int x = 0; x < nWidth; x++)
-            {
-                //fMag = planes_rep[0].At<float>(0, x);
-                fMag = Orig.At<float>(0, x);
-                fMag_Orig = Repaired.At<float>(0, x);
-                fDiff = (fMag - fMag_Orig);
-                //sbOut.Append(x.ToString() + "\t" + fDiff + "\t" + "\r\n");
-                sbOut.Append(x.ToString() + "\t" + fMag_Orig + "\t" + fMag + "\t" + fDiff + "\r\n");
-            }
-            txtPSFDump.Text = sbOut.ToString();
-            return;
-
-            //Fourier transform of mREPAIRED
-            //Set FT to zero along x axis, or in circle with period = motion blur length
-            //https://docs.opencv.org/3.4/de/dbc/tutorial_py_fourier_transform.html
-            Mat fOrig = mHistory[0].Clone();
-            Mat mORIG_FTReal = new Mat();
-            Mat mORIG_FTImag = new Mat();
-            Mat mORIG_FT = DFT(fOrig, null, ref mORIG_FTReal, ref mORIG_FTImag, DftFlags.Scale);
-
-            Mat magnitude_spectrum = fOrig.EmptyClone();
-            /*
-            Cv2.Magnitude(mORIG_FTReal, mORIG_FTImag, magnitude_spectrum);
-            for (int x = 0; x < mnWidth; x++)
-            {
-                for (int y1 = 0; y1 < mnHeight; y1++)
-                {
-                    magnitude_spectrum.Set<float>(y1, x, (float)Math.Log(magnitude_spectrum.At<float>(y1, x)));
-                }
-            }
-            mDisplayFFT(magnitude_spectrum.Rows, magnitude_spectrum.Cols, magnitude_spectrum);
-            */
-
-            Mat fREPAIRED = mREPAIRED.Clone();
-            Mat mREPAIRED_FTReal = new Mat();
-            Mat mREPAIRED_FTImag = new Mat();
-            Mat mREPAIRED_FT = DFT(fREPAIRED, null, ref mREPAIRED_FTReal, ref mREPAIRED_FTImag, DftFlags.Scale); //DftFlags.Scale = Scales the result: divide it by the number of array elements
-
-            /*
-            for (int x = 0; x < mnWidth; x++)
-            {
-                for (int y1 = 0; y1 < mnHeight; y1++)
-                {
-                    if (y1 < 5 || y1 > mnHeight - 5)
-                    {
-                        mREPAIRED_FTReal.Set<float>(y1, x, mORIG_FTReal.At<float>(y1, x));
-                        mREPAIRED_FTImag.Set<float>(y1, x, mORIG_FTImag.At<float>(y1, x));
-                    }
-                }
-            }
-            */
-
-            //Image is 612 wide
-            float fPeriod1 = 23.7f;
-            float fPeriodWidth = 0.15f;
-            int nPeriods = 0;
-            for (int x = 0; x < mnWidth; x++)
-            {
-                nPeriods = (int)Math.Round(x/ fPeriod1, 0);
-                if ((float)Math.Abs(x / fPeriod1 - nPeriods) < fPeriodWidth)
-                {
-                    for (int y1 = 0; y1 < mnHeight; y1++)
-                    {
-                        mREPAIRED_FTReal.Set<float>(y1, x, mORIG_FTReal.At<float>(y1,x));
-                        mREPAIRED_FTImag.Set<float>(y1, x, mORIG_FTImag.At<float>(y1, x));
-                    }
-                }
-            }
-
-            Cv2.Magnitude(mREPAIRED_FTReal, mREPAIRED_FTImag, magnitude_spectrum);
-            for (int x = 0; x < mnWidth; x++)
-            {
-                for (int y1 = 0; y1 < mnHeight; y1++)
-                {
-                    magnitude_spectrum.Set<float>(y1, x, (float)Math.Log(magnitude_spectrum.At<float>(y1, x)));
-                }
-            }
-            mDisplayFFTInPic(magnitude_spectrum.Rows, magnitude_spectrum.Cols, magnitude_spectrum, picFilterFT, true);
-
-
-            Mat[] planes = new Mat[2];
-            planes[0] = mREPAIRED_FTReal;
-            planes[1] = mREPAIRED_FTImag;
-            Cv2.Merge(planes, mREPAIRED_FT);
-
-            Mat inversedFourier = mREPAIRED_FT.EmptyClone();
-            Cv2.Idft(mREPAIRED_FT, inversedFourier);
-
-            Mat localREPAIRED = planes[0].EmptyClone();
-            Cv2.Split(inversedFourier, out planes);
-            planes[0].ConvertTo(localREPAIRED, mREPAIRED.Type());
-            MatToPictureBox_Zoomed(localREPAIRED, picOut, "", true, false, false);
-            return;
-
-            //Output along line
-            int y2 = 696;
-            int xStart = 280;
-            sbOut = new StringBuilder();
-            txtPSFDump.Text = "";
-            for (int x = xStart; x < mnWidth; x++)
-            {
-                sbOut.Append(x.ToString() + "\t" + mREPAIRED.At<ushort>(y2,x).ToString() + "\r\n");
-            }
-            txtPSFDump.Text = sbOut.ToString();
-            btnCopyPSF_Click(null, null);
-            return;
-
-            //Standard deconvolve
-            Mat orig = mHistory[0].Clone();
-            btnDeblur_Click(null, null);
-            Mat mDeconvolved_Std = mREPAIRED.Clone();
-            //Inverse of input image
-            Mat inv = orig.EmptyClone();
-            Cv2.BitwiseNot(orig, inv);
-            mHistory[0] = inv;
-            //Deconvolve inversed
-            btnDeblur_Click(null, null);
-            Mat mInversedDeconvolved = mREPAIRED.Clone();
-            mHistory[0] = orig;
-            
-            Mat sum = (mDeconvolved_Std + mInversedDeconvolved) / 2.0f;
-            SaveImage(sum, @"F:\temp\mask\Sum.tif");
-
-            Mat diff = (mDeconvolved_Std + mInversedDeconvolved) /2.0f - 0.5f;
-            Mat mFixed = mDeconvolved_Std + diff * 1.0f;
-
-            /*
-            mDeconvolved_Std.ConvertTo(mDeconvolved_Std, MatType.CV_16U);
-            Cv2.ImWrite(@"F:\temp\mask\DeconvolvedStd.tif", mDeconvolved_Std);
-            mInversedDeconvolved.ConvertTo(mInversedDeconvolved, MatType.CV_16U);
-            Cv2.ImWrite(@"F:\temp\mask\DeconvolvedInv.tif", mInversedDeconvolved);
-            */
-
-            //Convert back to ushort
-            mFixed.ConvertTo(mFixed, MatType.CV_16U);
-            mREPAIRED = mFixed;
-            MatToPictureBox_Zoomed(mREPAIRED, picOut, "", true, false, false);
-            return;
-
-            Mat imgIn = mHistory[0].Clone();
-            int nOverlapPixels = 0;
-            Mat mercator = ProjectToMercator(imgIn, -1.0f, -1.0f, 0.0f, 5.0f, ref nOverlapPixels);
-            Cv2.ImWrite(@"F:\temp\mask\mercator1.tif", mercator);
-            Mat repaired = MercatorToNormal(mercator, imgIn.Width, imgIn.Height, -1.0f, -1.0f, nOverlapPixels);
-            Cv2.ImWrite(@"F:\temp\mask\repaired1.tif", repaired);
+           //See CNotUsed.cs
         }
-
-
     }
 
     public class PixelBox : PictureBox

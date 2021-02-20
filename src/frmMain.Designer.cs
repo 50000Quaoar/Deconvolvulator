@@ -105,11 +105,11 @@
             this.label1 = new System.Windows.Forms.Label();
             this.label14 = new System.Windows.Forms.Label();
             this.grpPSFModify = new System.Windows.Forms.GroupBox();
-            this.txtPSFDump = new System.Windows.Forms.TextBox();
+            this.txtDebug = new System.Windows.Forms.TextBox();
             this.btnCopyPSF = new System.Windows.Forms.Button();
             this.btnSave = new System.Windows.Forms.Button();
             this.cboHistory = new System.Windows.Forms.ComboBox();
-            this.label16 = new System.Windows.Forms.Label();
+            this.lblDebugError = new System.Windows.Forms.Label();
             this.groupBox1 = new System.Windows.Forms.GroupBox();
             this.lblLastStored = new System.Windows.Forms.Label();
             this.optPrevious = new System.Windows.Forms.RadioButton();
@@ -174,6 +174,9 @@
             this.optMTF = new System.Windows.Forms.RadioButton();
             this.btnFourierTransform = new System.Windows.Forms.Button();
             this.chkPSF = new System.Windows.Forms.CheckBox();
+            this.optPlotFTNothing = new System.Windows.Forms.RadioButton();
+            this.udMaxPlotFT = new System.Windows.Forms.NumericUpDown();
+            this.chkInvPSF = new System.Windows.Forms.CheckBox();
             this.btnRotate = new System.Windows.Forms.Button();
             this.btnTest = new System.Windows.Forms.Button();
             this.lblPixelPos = new System.Windows.Forms.Label();
@@ -184,6 +187,7 @@
             this.label4 = new System.Windows.Forms.Label();
             this.label28 = new System.Windows.Forms.Label();
             this.grpPlotExtra = new System.Windows.Forms.GroupBox();
+            this.label33 = new System.Windows.Forms.Label();
             this.mnuRightMain = new System.Windows.Forms.ContextMenuStrip(this.components);
             this.mnuSetArea = new System.Windows.Forms.ToolStripMenuItem();
             this.mnuSetWholeImage = new System.Windows.Forms.ToolStripMenuItem();
@@ -232,6 +236,7 @@
             ((System.ComponentModel.ISupportInitialize)(this.udZoom)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.trkGif)).BeginInit();
             this.grpAnalysis.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.udMaxPlotFT)).BeginInit();
             this.grpPlotExtra.SuspendLayout();
             this.mnuRightMain.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.picPSF)).BeginInit();
@@ -283,10 +288,10 @@
             this.chkRepairEdges.Font = new System.Drawing.Font("Microsoft Sans Serif", 6.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.chkRepairEdges.Location = new System.Drawing.Point(1, 14);
             this.chkRepairEdges.Name = "chkRepairEdges";
-            this.chkRepairEdges.Size = new System.Drawing.Size(101, 16);
+            this.chkRepairEdges.Size = new System.Drawing.Size(104, 16);
             this.chkRepairEdges.TabIndex = 150;
-            this.chkRepairEdges.Text = "Fix border artifacts";
-            this.tip.SetToolTip(this.chkRepairEdges, "Fix borders to avoid artifacts Wiener and Tikhonov FFT repairs");
+            this.chkRepairEdges.Text = "Fix border artefacts";
+            this.tip.SetToolTip(this.chkRepairEdges, "Fix borders to avoid artefacts Wiener and Tikhonov FFT repairs");
             this.chkRepairEdges.UseVisualStyleBackColor = true;
             // 
             // picOut
@@ -1103,7 +1108,6 @@
             this.grpMotionBlurDetails.Controls.Add(this.label6);
             this.grpMotionBlurDetails.Controls.Add(this.txtPSFLineThickness);
             this.grpMotionBlurDetails.Controls.Add(this.chkAntiAliasLine);
-            this.grpMotionBlurDetails.Enabled = false;
             this.grpMotionBlurDetails.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(192)))), ((int)(((byte)(64)))), ((int)(((byte)(0)))));
             this.grpMotionBlurDetails.Location = new System.Drawing.Point(6, 405);
             this.grpMotionBlurDetails.Name = "grpMotionBlurDetails";
@@ -1329,22 +1333,22 @@
             this.grpPSFModify.TabStop = false;
             this.grpPSFModify.Text = "PSF Smooth";
             // 
-            // txtPSFDump
+            // txtDebug
             // 
-            this.txtPSFDump.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.txtPSFDump.Location = new System.Drawing.Point(807, 292);
-            this.txtPSFDump.Multiline = true;
-            this.txtPSFDump.Name = "txtPSFDump";
-            this.txtPSFDump.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
-            this.txtPSFDump.Size = new System.Drawing.Size(125, 128);
-            this.txtPSFDump.TabIndex = 57;
-            this.txtPSFDump.Visible = false;
-            this.txtPSFDump.WordWrap = false;
+            this.txtDebug.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.txtDebug.Location = new System.Drawing.Point(807, 292);
+            this.txtDebug.Multiline = true;
+            this.txtDebug.Name = "txtDebug";
+            this.txtDebug.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
+            this.txtDebug.Size = new System.Drawing.Size(125, 103);
+            this.txtDebug.TabIndex = 57;
+            this.txtDebug.Visible = false;
+            this.txtDebug.WordWrap = false;
             // 
             // btnCopyPSF
             // 
             this.btnCopyPSF.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.btnCopyPSF.Location = new System.Drawing.Point(810, 421);
+            this.btnCopyPSF.Location = new System.Drawing.Point(810, 396);
             this.btnCopyPSF.Name = "btnCopyPSF";
             this.btnCopyPSF.Size = new System.Drawing.Size(125, 23);
             this.btnCopyPSF.TabIndex = 160;
@@ -1378,16 +1382,16 @@
             this.cboHistory.Size = new System.Drawing.Size(279, 24);
             this.cboHistory.TabIndex = 113;
             // 
-            // label16
+            // lblDebugError
             // 
-            this.label16.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.label16.AutoSize = true;
-            this.label16.Location = new System.Drawing.Point(809, 276);
-            this.label16.Name = "label16";
-            this.label16.Size = new System.Drawing.Size(94, 13);
-            this.label16.TabIndex = 62;
-            this.label16.Text = "PSF Radial values";
-            this.label16.Visible = false;
+            this.lblDebugError.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.lblDebugError.AutoSize = true;
+            this.lblDebugError.Location = new System.Drawing.Point(809, 276);
+            this.lblDebugError.Name = "lblDebugError";
+            this.lblDebugError.Size = new System.Drawing.Size(86, 13);
+            this.lblDebugError.TabIndex = 62;
+            this.lblDebugError.Text = "Error/Debug info";
+            this.lblDebugError.Visible = false;
             // 
             // groupBox1
             // 
@@ -1443,7 +1447,7 @@
             // btnConvolve
             // 
             this.btnConvolve.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.btnConvolve.Location = new System.Drawing.Point(860, 441);
+            this.btnConvolve.Location = new System.Drawing.Point(860, 421);
             this.btnConvolve.Name = "btnConvolve";
             this.btnConvolve.Size = new System.Drawing.Size(75, 23);
             this.btnConvolve.TabIndex = 6;
@@ -1625,7 +1629,6 @@
             this.grpLayers.Controls.Add(this.trkLayers0);
             this.grpLayers.Controls.Add(this.trkLayers4);
             this.grpLayers.Controls.Add(this.trkLayers3);
-            this.grpLayers.Enabled = false;
             this.grpLayers.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(192)))), ((int)(((byte)(0)))), ((int)(((byte)(192)))));
             this.grpLayers.Location = new System.Drawing.Point(7, 223);
             this.grpLayers.Name = "grpLayers";
@@ -1998,7 +2001,7 @@
             // 
             // picPSFProfile
             // 
-            this.picPSFProfile.Location = new System.Drawing.Point(487, 24);
+            this.picPSFProfile.Location = new System.Drawing.Point(485, 24);
             this.picPSFProfile.Name = "picPSFProfile";
             this.picPSFProfile.Size = new System.Drawing.Size(259, 96);
             this.picPSFProfile.TabIndex = 69;
@@ -2007,7 +2010,7 @@
             // label24
             // 
             this.label24.AutoSize = true;
-            this.label24.Location = new System.Drawing.Point(490, 7);
+            this.label24.Location = new System.Drawing.Point(486, 7);
             this.label24.Name = "label24";
             this.label24.Size = new System.Drawing.Size(115, 13);
             this.label24.TabIndex = 70;
@@ -2020,7 +2023,7 @@
             0,
             0,
             0});
-            this.udPSFPlotWidth.Location = new System.Drawing.Point(621, 2);
+            this.udPSFPlotWidth.Location = new System.Drawing.Point(601, 3);
             this.udPSFPlotWidth.Maximum = new decimal(new int[] {
             200,
             0,
@@ -2043,9 +2046,9 @@
             // 
             // btnClearPSFPlot
             // 
-            this.btnClearPSFPlot.Location = new System.Drawing.Point(671, 1);
+            this.btnClearPSFPlot.Location = new System.Drawing.Point(639, 1);
             this.btnClearPSFPlot.Name = "btnClearPSFPlot";
-            this.btnClearPSFPlot.Size = new System.Drawing.Size(75, 23);
+            this.btnClearPSFPlot.Size = new System.Drawing.Size(43, 23);
             this.btnClearPSFPlot.TabIndex = 72;
             this.btnClearPSFPlot.Text = "Clear";
             this.btnClearPSFPlot.UseVisualStyleBackColor = true;
@@ -2276,6 +2279,62 @@
             this.tip.SetToolTip(this.chkPSF, "Display FT of PSF");
             this.chkPSF.UseVisualStyleBackColor = true;
             // 
+            // optPlotFTNothing
+            // 
+            this.optPlotFTNothing.AutoSize = true;
+            this.optPlotFTNothing.Location = new System.Drawing.Point(86, 27);
+            this.optPlotFTNothing.Name = "optPlotFTNothing";
+            this.optPlotFTNothing.Size = new System.Drawing.Size(47, 17);
+            this.optPlotFTNothing.TabIndex = 164;
+            this.optPlotFTNothing.TabStop = true;
+            this.optPlotFTNothing.Text = "Hide";
+            this.tip.SetToolTip(this.optPlotFTNothing, "Don\'t show filter (speeds up processing)");
+            this.optPlotFTNothing.UseVisualStyleBackColor = true;
+            // 
+            // udMaxPlotFT
+            // 
+            this.udMaxPlotFT.DecimalPlaces = 4;
+            this.udMaxPlotFT.Increment = new decimal(new int[] {
+            5,
+            0,
+            0,
+            0});
+            this.udMaxPlotFT.Location = new System.Drawing.Point(75, 43);
+            this.udMaxPlotFT.Maximum = new decimal(new int[] {
+            1000,
+            0,
+            0,
+            0});
+            this.udMaxPlotFT.Minimum = new decimal(new int[] {
+            1,
+            0,
+            0,
+            262144});
+            this.udMaxPlotFT.Name = "udMaxPlotFT";
+            this.udMaxPlotFT.Size = new System.Drawing.Size(60, 20);
+            this.udMaxPlotFT.TabIndex = 165;
+            this.tip.SetToolTip(this.udMaxPlotFT, "Value of Fourier Transform which maps to white in the display below");
+            this.udMaxPlotFT.Value = new decimal(new int[] {
+            20,
+            0,
+            0,
+            0});
+            this.udMaxPlotFT.ValueChanged += new System.EventHandler(this.udMaxPlotFT_ValueChanged);
+            // 
+            // chkInvPSF
+            // 
+            this.chkInvPSF.AutoSize = true;
+            this.chkInvPSF.Font = new System.Drawing.Font("Microsoft Sans Serif", 6.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.chkInvPSF.Location = new System.Drawing.Point(684, 5);
+            this.chkInvPSF.Name = "chkInvPSF";
+            this.chkInvPSF.Size = new System.Drawing.Size(58, 16);
+            this.chkInvPSF.TabIndex = 73;
+            this.chkInvPSF.Text = "Inv PSF";
+            this.tip.SetToolTip(this.chkInvPSF, "Display the PSF of the inverse filter, ie, image is repaired by convolving with t" +
+        "his PSF");
+            this.chkInvPSF.UseVisualStyleBackColor = true;
+            this.chkInvPSF.CheckedChanged += new System.EventHandler(this.chkInvPSF_CheckedChanged);
+            // 
             // btnRotate
             // 
             this.btnRotate.Location = new System.Drawing.Point(890, 36);
@@ -2368,14 +2427,26 @@
             // grpPlotExtra
             // 
             this.grpPlotExtra.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.grpPlotExtra.Controls.Add(this.label33);
+            this.grpPlotExtra.Controls.Add(this.udMaxPlotFT);
+            this.grpPlotExtra.Controls.Add(this.optPlotFTNothing);
             this.grpPlotExtra.Controls.Add(this.optMTF);
             this.grpPlotExtra.Controls.Add(this.optFilterFourierTransform);
-            this.grpPlotExtra.Location = new System.Drawing.Point(804, 464);
+            this.grpPlotExtra.Location = new System.Drawing.Point(804, 446);
             this.grpPlotExtra.Name = "grpPlotExtra";
-            this.grpPlotExtra.Size = new System.Drawing.Size(139, 46);
+            this.grpPlotExtra.Size = new System.Drawing.Size(139, 64);
             this.grpPlotExtra.TabIndex = 161;
             this.grpPlotExtra.TabStop = false;
             this.grpPlotExtra.Text = "Plot";
+            // 
+            // label33
+            // 
+            this.label33.AutoSize = true;
+            this.label33.Location = new System.Drawing.Point(5, 46);
+            this.label33.Name = "label33";
+            this.label33.Size = new System.Drawing.Size(64, 13);
+            this.label33.TabIndex = 166;
+            this.label33.Text = "White value";
             // 
             // mnuRightMain
             // 
@@ -2427,6 +2498,7 @@
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(949, 689);
+            this.Controls.Add(this.chkInvPSF);
             this.Controls.Add(this.btnSavePSF);
             this.Controls.Add(this.chkPSF);
             this.Controls.Add(this.btnFourierTransform);
@@ -2462,11 +2534,11 @@
             this.Controls.Add(this.label21);
             this.Controls.Add(this.lblProcessing);
             this.Controls.Add(this.btnConvolve);
-            this.Controls.Add(this.label16);
+            this.Controls.Add(this.lblDebugError);
             this.Controls.Add(this.cboHistory);
             this.Controls.Add(this.btnSave);
             this.Controls.Add(this.btnCopyPSF);
-            this.Controls.Add(this.txtPSFDump);
+            this.Controls.Add(this.txtDebug);
             this.Controls.Add(this.grpPSFModify);
             this.Controls.Add(this.chkAutoDeblur);
             this.Controls.Add(this.picPSF);
@@ -2540,6 +2612,7 @@
             ((System.ComponentModel.ISupportInitialize)(this.trkGif)).EndInit();
             this.grpAnalysis.ResumeLayout(false);
             this.grpAnalysis.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.udMaxPlotFT)).EndInit();
             this.grpPlotExtra.ResumeLayout(false);
             this.grpPlotExtra.PerformLayout();
             this.mnuRightMain.ResumeLayout(false);
@@ -2592,12 +2665,12 @@
         private PixelBox picPSF;
         private System.Windows.Forms.GroupBox grpPSFModify;
         private System.Windows.Forms.RadioButton optCustomRepair;
-        private System.Windows.Forms.TextBox txtPSFDump;
+        private System.Windows.Forms.TextBox txtDebug;
         private System.Windows.Forms.Button btnCopyPSF;
         private System.Windows.Forms.NumericUpDown udBrightness;
         private System.Windows.Forms.Button btnSave;
         private System.Windows.Forms.ComboBox cboHistory;
-        private System.Windows.Forms.Label label16;
+        private System.Windows.Forms.Label lblDebugError;
         private System.Windows.Forms.GroupBox groupBox1;
         private System.Windows.Forms.RadioButton optPrevious;
         private System.Windows.Forms.RadioButton optOriginal;
@@ -2709,6 +2782,10 @@
         private System.Windows.Forms.Label label32;
         private System.Windows.Forms.Button btnSavePSF;
         private System.Windows.Forms.RadioButton optRIF;
+        private System.Windows.Forms.RadioButton optPlotFTNothing;
+        private System.Windows.Forms.Label label33;
+        private System.Windows.Forms.NumericUpDown udMaxPlotFT;
+        private System.Windows.Forms.CheckBox chkInvPSF;
     }
 }
 

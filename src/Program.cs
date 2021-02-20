@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Forms;
 
-namespace Deconvulator
+namespace Deconvolvulator
 {
     static class Program
     {
@@ -15,7 +15,7 @@ namespace Deconvulator
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            //Application.Run(new frmMain());
+            //Application.Run(new frmFourier());
             Application.Run(new frmMain());
         }
     }
